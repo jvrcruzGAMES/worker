@@ -5,6 +5,8 @@ import httpx
 
 from app.config import settings
 
+from app.services.integrity import worker_integrity
+
 logger = logging.getLogger("worker.announcer")
 
 
@@ -82,16 +84,51 @@ class OrchestratorAnnouncer:
                 logger.warning(f"Heartbeat to {settings.ORCHESTRATOR_URL} failed: {e}")
 
     async def _announce(self) -> bool:
-        announce_url = f"{settings.ORCHESTRATOR_URL}/api/v1/workers/announce"
-        payload = {
-            "name": settings.WORKER_NAME,
-            "base_url": settings.WORKER_BASE_URL,
-            "health_endpoint": settings.HEALTH_ENDPOINT,
-            "status": "online",
-            "metadata": settings.metadata_dict,
-            "tags": settings.WORKER_TAGS,
-        }
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        commit_sha = worker_integrity.get_commit_sha()
+        challenge_id: Optional[str] = None
+        proof: Optional[str] = None
+
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            # Step 1: Request integrity challenge if enabled
+            if settings.INTEGRITY_CHECK_ENABLED:
+                challenge_url = f"{settings.ORCHESTRATOR_URL}/api/v1/workers/integrity/challenge"
+                challenge_req = {
+                    "commit_sha": commit_sha,
+                    "base_url": settings.WORKER_BASE_URL,
+                    "version": settings.WORKER_VERSION,
+                }
+                chal_resp = await client.post(challenge_url, json=challenge_req, headers={"Accept": "application/json"})
+                if chal_resp.status_code != 200:
+                    logger.error(
+                        f"Integrity challenge request rejected (HTTP {chal_resp.status_code}): {chal_resp.text}"
+                    )
+                    return False
+                
+                chal_data = chal_resp.json()
+                challenge_id = chal_data.get("challenge_id")
+                nonce = chal_data.get("nonce")
+                sampled_files = chal_data.get("sampled_files", [])
+
+                if challenge_id != "disabled" and nonce and sampled_files:
+                    proof = worker_integrity.compute_challenge_proof(
+                        nonce=nonce,
+                        commit_sha=commit_sha,
+                        sampled_files=sampled_files,
+                    )
+
+            # Step 2: Submit announcement with challenge proof
+            announce_url = f"{settings.ORCHESTRATOR_URL}/api/v1/workers/announce"
+            payload = {
+                "name": settings.WORKER_NAME,
+                "base_url": settings.WORKER_BASE_URL,
+                "health_endpoint": settings.HEALTH_ENDPOINT,
+                "status": "online",
+                "metadata": settings.metadata_dict,
+                "tags": settings.WORKER_TAGS,
+                "challenge_id": challenge_id,
+                "proof": proof,
+                "commit_sha": commit_sha,
+            }
             resp = await client.post(announce_url, json=payload, headers={"Accept": "application/json"})
             if resp.status_code in [200, 201]:
                 data = resp.json()

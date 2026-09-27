@@ -75,3 +75,16 @@ async def test_job_listing_and_files_table():
         finally:
             if sample_file.exists():
                 sample_file.unlink()
+
+
+def test_worker_integrity_proof():
+    from app.services.integrity import worker_integrity
+
+    commit = worker_integrity.get_commit_sha()
+    assert commit is not None
+
+    nonce = "test-nonce-12345"
+    sampled_files = ["app/main.py", "app/config.py"]
+    proof = worker_integrity.compute_challenge_proof(nonce, commit, sampled_files)
+    assert len(proof) == 64  # SHA-256 hex digest length
+

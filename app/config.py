@@ -19,8 +19,10 @@ class Settings(BaseSettings):
     WORKER_BASE_URL: str = "http://localhost:8001"
     HEALTH_ENDPOINT: str = "/health"
 
-    # Orchestrator location
+    # Orchestrator location and integrity verification
     ORCHESTRATOR_URL: str = "http://localhost:8000"
+    INTEGRITY_CHECK_ENABLED: bool = True
+    GIT_COMMIT_SHA: Optional[str] = os.getenv("GIT_COMMIT_SHA", None)
     
     # Discovery announcement & heartbeat intervals
     AUTO_ANNOUNCE: bool = True

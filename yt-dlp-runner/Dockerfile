@@ -5,15 +5,22 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DOWNLOADS_DIR=/app/downloads \
-    COOKIES_DIR=/app/cookies
+    COOKIES_DIR=/app/cookies \
+    DENO_INSTALL=/usr/local \
+    PATH="/usr/local/bin:${PATH}"
 
-# Install ffmpeg, curl, git (for git-based yt-dlp plugins), and ca-certificates
+# Install ffmpeg, curl, unzip, git, and ca-certificates
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     curl \
+    unzip \
     git \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Deno JavaScript runtime
+RUN curl -fsSL https://deno.land/install.sh | sh \
+    && deno --version
 
 # Create isolated cookies and visible downloads directories
 RUN mkdir -p /app/downloads /app/cookies

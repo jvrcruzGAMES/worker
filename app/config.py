@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     DOCKER_NETWORK: str = "mithril-network"
     RUNNER_PORT: int = 8080
     
+    # FlareSolverr configuration (required for challenge resolution)
+    FLARESOLVERR_URL: str = "http://flaresolverr:8191/v1"
+    FLARESOLVERR_PROXY: Optional[str] = None
+    
     # Inactivity timeout for child containers: 20 minutes = 1200 seconds
     INACTIVITY_TIMEOUT_SECONDS: int = 1200
     INACTIVITY_CHECK_INTERVAL_SECONDS: int = 30

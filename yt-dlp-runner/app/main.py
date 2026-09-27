@@ -9,8 +9,10 @@ from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
+from contextlib import asynccontextmanager
 from app.config import settings
 from app.downloader import downloader_manager
+from app.flaresolverr_proxy import flaresolverr_proxy
 from app.plugins import plugin_manager
 from app.schemas import (
     ActivityResponse,
@@ -27,9 +29,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger("yt_dlp_runner")
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Starting yt-dlp runner supervisor...")
+    await flaresolverr_proxy.start()
+    yield
+    logger.info("Stopping yt-dlp runner supervisor...")
+    await flaresolverr_proxy.stop()
+
+
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
+    lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
 )

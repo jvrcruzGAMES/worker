@@ -113,6 +113,8 @@ class DockerManager:
                     environment={
                         "DOWNLOADS_DIR": "/app/downloads",
                         "COOKIES_DIR": "/app/cookies",
+                        "FLARESOLVERR_URL": settings.FLARESOLVERR_URL,
+                        "FLARESOLVERR_PROXY": settings.FLARESOLVERR_PROXY or "",
                     },
                     restart_policy={"Name": "no"},
                 )

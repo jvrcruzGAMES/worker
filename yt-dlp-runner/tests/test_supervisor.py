@@ -2,9 +2,50 @@ import os
 from pathlib import Path
 import pytest
 from httpx import ASGITransport, AsyncClient
+from app.args_sanitizer import sanitize_yt_dlp_args
 from app.config import settings
 from app.main import app
 from app.plugins import normalize_plugin_spec
+
+
+def test_sanitize_yt_dlp_args():
+    client_args = [
+        "--proxy", "http://client-proxy:8080",
+        "--write-subs",
+        "--sub-lang", "en",
+        "--outtmpl", "%(title)s.mp4",
+        "-o", "custom.mp4",
+        "--proxy=http://client-proxy-2:8080",
+        "--write-thumbnail",
+        "-f", "best",
+        "--cookies", "/tmp/client_cookie.txt",
+        "--exec", "rm -rf /",
+        "--dump-json",
+    ]
+
+    sanitized, stripped = sanitize_yt_dlp_args(client_args)
+
+    # Allowed arguments should be preserved
+    assert "--write-subs" in sanitized
+    assert "--sub-lang" in sanitized
+    assert "en" in sanitized
+    assert "--write-thumbnail" in sanitized
+    assert "-f" in sanitized
+    assert "best" in sanitized
+
+    # Disallowed arguments must be stripped
+    assert "--proxy" not in sanitized
+    assert "http://client-proxy:8080" not in sanitized
+    assert "--proxy=http://client-proxy-2:8080" not in sanitized
+    assert "--outtmpl" not in sanitized
+    assert "-o" not in sanitized
+    assert "custom.mp4" not in sanitized
+    assert "--cookies" not in sanitized
+    assert "/tmp/client_cookie.txt" not in sanitized
+    assert "--exec" not in sanitized
+    assert "--dump-json" not in sanitized
+
+    assert len(stripped) > 0
 
 
 def test_normalize_plugin_spec():

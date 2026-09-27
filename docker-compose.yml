@@ -1,4 +1,19 @@
 services:
+  # FlareSolverr service instance required by the worker and yt-dlp runner
+  flaresolverr:
+    image: flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    restart: unless-stopped
+    ports:
+      - "8191:8191"
+    environment:
+      - LOG_LEVEL=info
+      - LOG_HTML=false
+      - CAPTCHA_SOLVER=none
+      - PROXY=${FLARESOLVERR_PROXY:-}
+    networks:
+      - mithril-net
+
   worker:
     build:
       context: .
@@ -17,12 +32,16 @@ services:
       - ORCHESTRATOR_URL=http://orchestrator:8000
       - DOCKER_NETWORK=mithril-network
       - RUNNER_IMAGE=mithril-yt-dlp-runner:latest
+      - FLARESOLVERR_URL=http://flaresolverr:8191/v1
+      - FLARESOLVERR_PROXY=${FLARESOLVERR_PROXY:-}
       - INACTIVITY_TIMEOUT_SECONDS=1200
       - AUTO_ANNOUNCE=true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - mithril-downloads:/app/downloads
       - mithril-cookies:/app/cookies
+    depends_on:
+      - flaresolverr
     networks:
       - mithril-net
 

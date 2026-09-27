@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import yt_dlp
 
+from app.args_sanitizer import sanitize_yt_dlp_args
 from app.config import settings
+from app.flaresolverr_proxy import flaresolverr_proxy
 from app.plugins import plugin_manager
 from app.schemas import (
     DownloadRequest,
@@ -194,15 +196,24 @@ class DownloadTaskManager:
                 "nocheckcertificate": False,
             }
 
+            # Route through FlareSolverr mitmproxy if active
+            if flaresolverr_proxy.is_active or settings.USE_FLARESOLVERR_PROXY:
+                ydl_opts["proxy"] = flaresolverr_proxy.proxy_url
+                task.logs.append(f"Routing through FlareSolverr mitmproxy at: {flaresolverr_proxy.proxy_url}")
+
             if cookie_path and os.path.exists(cookie_path):
                 ydl_opts["cookiefile"] = cookie_path
 
             if request.format_selection:
                 ydl_opts["format"] = request.format_selection
 
+            # Sanitize and strip any disallowed / worker-reserved CLI arguments (including client-defined --proxy)
             if request.custom_args:
-                for arg in request.custom_args:
-                    task.logs.append(f"Custom arg: {arg}")
+                sanitized_args, stripped_args = sanitize_yt_dlp_args(request.custom_args)
+                if stripped_args:
+                    task.logs.append(f"Stripped worker-reserved arguments: {stripped_args}")
+                for arg in sanitized_args:
+                    task.logs.append(f"Applying sanitized custom arg: {arg}")
 
             # Run extraction and download in thread pool
             loop = asyncio.get_running_loop()

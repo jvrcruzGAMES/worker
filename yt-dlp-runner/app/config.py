@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,6 +28,11 @@ class RunnerSettings(BaseSettings):
 
     DOWNLOADS_DIR: str = _default_downloads_dir()
     COOKIES_DIR: str = _default_cookies_dir()
+
+    FLARESOLVERR_URL: str = os.getenv("FLARESOLVERR_URL", "http://flaresolverr:8191/v1")
+    FLARESOLVERR_PROXY: Optional[str] = os.getenv("FLARESOLVERR_PROXY", None)
+    MITMPROXY_PORT: int = 8192
+    USE_FLARESOLVERR_PROXY: bool = True
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -26,9 +26,8 @@ class Settings(BaseSettings):
     WORKER_BASE_URL: str = "http://localhost:8001"
     HEALTH_ENDPOINT: str = "/health"
 
-    # Orchestrator location and authentication
+    # Orchestrator location
     ORCHESTRATOR_URL: str = "http://localhost:8000"
-    MITHRIL_TOKEN: Optional[str] = None  # Bearer token for authenticating with orchestrator
     
     # Discovery announcement & heartbeat intervals
     AUTO_ANNOUNCE: bool = True

@@ -16,10 +16,7 @@ class OrchestratorAnnouncer:
 
     @property
     def _headers(self) -> Dict[str, str]:
-        headers = {"Accept": "application/json"}
-        if settings.MITHRIL_TOKEN:
-            headers["Authorization"] = f"Bearer {settings.MITHRIL_TOKEN}"
-        return headers
+        return {"Accept": "application/json"}
 
     def start(self):
         if not settings.AUTO_ANNOUNCE:

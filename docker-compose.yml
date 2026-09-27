@@ -2,7 +2,7 @@ services:
   # FlareSolverr service instance required by the worker and yt-dlp runner
   flaresolverr:
     image: flaresolverr/flaresolverr:latest
-    container_name: flaresolverr
+    container_name: mithril-worker-flaresolverr
     restart: unless-stopped
     ports:
       - "8191:8191"

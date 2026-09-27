@@ -55,22 +55,40 @@ async def test_cookie_directory_isolation(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_file_listing_and_streaming():
+async def test_file_listing_and_hex_streaming():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        # Create a test file in downloads directory
-        test_file = Path(settings.DOWNLOADS_DIR) / "test_media.mp4"
-        test_file.write_bytes(b"dummy video data")
+        # Create two test files in downloads directory (e.g. video + subtitle)
+        test_video = Path(settings.DOWNLOADS_DIR) / "test_video.mp4"
+        test_sub = Path(settings.DOWNLOADS_DIR) / "test_video.en.vtt"
+        test_video.write_bytes(b"dummy video data")
+        test_sub.write_bytes(b"WEBVTT subtitle data")
 
         try:
             resp = await client.get("/files")
             assert resp.status_code == 200
-            files = [f["filename"] for f in resp.json()]
-            assert "test_media.mp4" in files
+            files = resp.json()
+            assert len(files) >= 2
 
-            # Stream the file
-            stream_resp = await client.get("/files/test_media.mp4")
-            assert stream_resp.status_code == 200
-            assert stream_resp.content == b"dummy video data"
+            video_item = [f for f in files if f["filename"] == "test_video.mp4"][0]
+            assert "file_id" in video_item
+            assert len(video_item["file_id"]) == 16
+            assert f"/files/{video_item['file_id']}/download" == video_item["download_url"]
+
+            sub_item = [f for f in files if f["filename"] == "test_video.en.vtt"][0]
+            assert "file_id" in sub_item
+            assert sub_item["file_id"] != video_item["file_id"]
+
+            # Stream video using hex ID
+            stream_video = await client.get(f"/files/{video_item['file_id']}/download")
+            assert stream_video.status_code == 200
+            assert stream_video.content == b"dummy video data"
+
+            # Stream subtitle using hex ID
+            stream_sub = await client.get(f"/files/{sub_item['file_id']}/download")
+            assert stream_sub.status_code == 200
+            assert stream_sub.content == b"WEBVTT subtitle data"
         finally:
-            if test_file.exists():
-                test_file.unlink()
+            if test_video.exists():
+                test_video.unlink()
+            if test_sub.exists():
+                test_sub.unlink()

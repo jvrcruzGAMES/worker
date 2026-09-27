@@ -2,11 +2,12 @@ import asyncio
 import datetime
 import logging
 import uuid
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import httpx
 
 from app.config import settings
 from app.schemas import (
+    FileItemResponse,
     JobCreateRequest,
     JobResponse,
     PluginInstallRequest,
@@ -21,11 +22,13 @@ class JobService:
     def __init__(self):
         self.jobs: Dict[str, JobResponse] = {}
         self._sync_tasks: Dict[str, asyncio.Task] = {}
+        # Maps file_id (hex) or filename -> (filename, container_id)
+        self.file_map: Dict[str, Tuple[str, Optional[str]]] = {}
 
     def get_active_jobs_count(self) -> int:
         return sum(
             1 for j in self.jobs.values()
-            if j.status in ["pending", "starting_container", "downloading"]
+            if j.status in ["pending", "starting_container", "installing_plugins", "downloading"]
         )
 
     async def create_job(self, request: JobCreateRequest) -> JobResponse:
@@ -118,8 +121,37 @@ class JobService:
                         job.status = current_status
                         job.error = status_data.get("error")
                         job.completed_at = datetime.datetime.now(datetime.timezone.utc)
-                        if job.filename:
-                            job.download_url = f"/api/v1/files/{job.filename}"
+
+                        # Process table of generated files
+                        raw_files = status_data.get("files", [])
+                        file_items: List[FileItemResponse] = []
+                        for rf in raw_files:
+                            fid = rf["file_id"]
+                            fname = rf["filename"]
+                            # Register in worker file map
+                            self.file_map[fid] = (fname, runner.container_id)
+                            self.file_map[fname] = (fname, runner.container_id)
+                            file_items.append(
+                                FileItemResponse(
+                                    file_id=fid,
+                                    filename=fname,
+                                    size_bytes=rf["size_bytes"],
+                                    mime_type=rf.get("mime_type", "application/octet-stream"),
+                                    download_url=f"/api/v1/files/{fid}/download",
+                                    modified_at=datetime.datetime.fromisoformat(
+                                        rf["modified_at"]
+                                    ) if isinstance(rf["modified_at"], str) else rf["modified_at"],
+                                )
+                            )
+
+                        job.files = file_items
+                        if file_items:
+                            job.download_url = file_items[0].download_url
+                            if not job.filename:
+                                job.filename = file_items[0].filename
+                        elif job.filename:
+                            job.download_url = f"/api/v1/files/{job.filename}/download"
+
                         break
 
         except Exception as e:

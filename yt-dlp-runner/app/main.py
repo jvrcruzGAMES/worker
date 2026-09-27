@@ -78,13 +78,13 @@ async def install_plugin(request: PluginInstallRequest):
 
 @app.post("/download", response_model=DownloadTaskResponse, status_code=status.HTTP_202_ACCEPTED, tags=["Downloads"])
 async def trigger_download(request: DownloadRequest):
-    """Starts a yt-dlp download task in the background"""
+    """Starts a yt-dlp download task in the background, returning task and file metadata"""
     return await downloader_manager.start_download(request)
 
 
 @app.get("/download/{task_id}", response_model=DownloadTaskResponse, tags=["Downloads"])
 async def get_download_status(task_id: str):
-    """Gets the status, progress and logs of a download task"""
+    """Gets the status, progress, logs and table of generated files for a download task"""
     task = downloader_manager.get_task(task_id)
     if not task:
         raise HTTPException(
@@ -108,58 +108,40 @@ async def cancel_download(task_id: str):
 
 @app.get("/files", response_model=List[FileInfo], tags=["Files"])
 async def list_files():
-    """Lists all files present in the visible downloads directory"""
-    downloader_manager.touch_activity()
-    files_list: List[FileInfo] = []
-    downloads_path = Path(settings.DOWNLOADS_DIR)
-
-    if downloads_path.exists():
-        for file in downloads_path.iterdir():
-            if file.is_file():
-                stat = file.stat()
-                files_list.append(
-                    FileInfo(
-                        filename=file.name,
-                        size_bytes=stat.st_size,
-                        modified_at=datetime.datetime.fromtimestamp(
-                            stat.st_mtime, tz=datetime.timezone.utc
-                        ),
-                        download_url=f"/files/{file.name}",
-                    )
-                )
-    return files_list
+    """Lists all files in downloads directory with their hex IDs and download URLs"""
+    return downloader_manager.list_all_files()
 
 
-@app.get("/files/{filename}", tags=["Files"])
-async def stream_file(filename: str):
-    """Streams / downloads a specific file from the downloads directory"""
-    downloader_manager.touch_activity()
-    file_path = Path(settings.DOWNLOADS_DIR) / filename
-    if not file_path.is_file() or not file_path.exists():
+@app.get("/files/{file_id_or_name}/download", tags=["Files"])
+@app.get("/files/{file_id_or_name}", tags=["Files"])
+async def stream_file(file_id_or_name: str):
+    """Streams / downloads a specific file by its hex file ID or filename"""
+    file_path = downloader_manager.get_file_by_id_or_name(file_id_or_name)
+    if not file_path or not file_path.is_file() or not file_path.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"File '{filename}' not found in downloads directory."
+            detail=f"File with ID or name '{file_id_or_name}' not found."
         )
 
     return FileResponse(
         path=str(file_path),
-        filename=filename,
+        filename=file_path.name,
         media_type="application/octet-stream",
     )
 
 
-@app.delete("/files/{filename}", tags=["Files"])
-async def delete_file(filename: str):
-    """Deletes a file from the downloads directory"""
-    downloader_manager.touch_activity()
-    file_path = Path(settings.DOWNLOADS_DIR) / filename
-    if not file_path.is_file() or not file_path.exists():
+@app.delete("/files/{file_id_or_name}", tags=["Files"])
+async def delete_file(file_id_or_name: str):
+    """Deletes a file by its hex ID or filename"""
+    file_path = downloader_manager.get_file_by_id_or_name(file_id_or_name)
+    if not file_path or not file_path.is_file() or not file_path.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"File '{filename}' not found."
+            detail=f"File with ID or name '{file_id_or_name}' not found."
         )
     os.remove(file_path)
-    return {"status": "deleted", "filename": filename}
+    downloader_manager.file_registry.pop(file_id_or_name, None)
+    return {"status": "deleted", "identifier": file_id_or_name, "filename": file_path.name}
 
 
 if __name__ == "__main__":

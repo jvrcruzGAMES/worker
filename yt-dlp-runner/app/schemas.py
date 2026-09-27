@@ -11,7 +11,7 @@ class DownloadRequest(BaseModel):
     )
     custom_args: Optional[List[str]] = Field(
         default_factory=list,
-        description="Optional list of additional yt-dlp CLI arguments (e.g. ['-f', 'best', '--extract-audio'])"
+        description="Optional list of additional yt-dlp CLI arguments (e.g. ['-f', 'best', '--extract-audio', '--write-subs', '--write-thumbnail'])"
     )
     output_template: Optional[str] = Field(
         default="%(title)s [%(id)s].%(ext)s",
@@ -27,6 +27,15 @@ class DownloadRequest(BaseModel):
     )
 
 
+class FileInfo(BaseModel):
+    file_id: str = Field(..., description="Hex identifier for the file")
+    filename: str = Field(..., description="Original filename with extension")
+    size_bytes: int = Field(..., description="Size of file in bytes")
+    mime_type: str = Field(default="application/octet-stream", description="Detected MIME content type")
+    download_url: str = Field(..., description="Download URL using the hex file ID")
+    modified_at: datetime.datetime
+
+
 class DownloadTaskResponse(BaseModel):
     task_id: str
     url: str
@@ -38,6 +47,7 @@ class DownloadTaskResponse(BaseModel):
     eta_seconds: Optional[int] = None
     filename: Optional[str] = None
     filepath: Optional[str] = None
+    files: List[FileInfo] = Field(default_factory=list, description="Table of all generated files with hex download URLs")
     error: Optional[str] = None
     started_at: Optional[datetime.datetime] = None
     completed_at: Optional[datetime.datetime] = None
@@ -58,13 +68,6 @@ class PluginInstallResponse(BaseModel):
     stdout: str
     stderr: str
     installed_packages: List[str] = Field(default_factory=list)
-
-
-class FileInfo(BaseModel):
-    filename: str
-    size_bytes: int
-    modified_at: datetime.datetime
-    download_url: str
 
 
 class ActivityResponse(BaseModel):

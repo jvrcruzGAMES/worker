@@ -33,7 +33,7 @@ class JobCreateRequest(BaseModel):
     )
     custom_args: Optional[List[str]] = Field(
         default_factory=list,
-        description="Optional additional yt-dlp CLI arguments"
+        description="Optional additional yt-dlp CLI arguments (e.g. ['--write-subs', '--write-thumbnail'])"
     )
     output_template: Optional[str] = Field(
         default="%(title)s [%(id)s].%(ext)s",
@@ -45,8 +45,17 @@ class JobCreateRequest(BaseModel):
     )
     plugins: Optional[List[str]] = Field(
         default_factory=list,
-        description="Optional list of Python yt-dlp plugin packages to install in runner prior to download"
+        description="Optional list of Python yt-dlp plugin packages or git repos to install prior to download"
     )
+
+
+class FileItemResponse(BaseModel):
+    file_id: str = Field(..., description="16-character hex identifier for the file")
+    filename: str = Field(..., description="Original filename with extension")
+    size_bytes: int = Field(..., description="Size of file in bytes")
+    mime_type: str = Field(default="application/octet-stream", description="Detected MIME type")
+    download_url: str = Field(..., description="Direct download URL using the hex ID")
+    modified_at: datetime.datetime
 
 
 class JobResponse(BaseModel):
@@ -64,6 +73,10 @@ class JobResponse(BaseModel):
     task_id: Optional[str] = None
     filename: Optional[str] = None
     download_url: Optional[str] = None
+    files: List[FileItemResponse] = Field(
+        default_factory=list,
+        description="Table of all generated files with their hex file IDs and download URLs"
+    )
     error: Optional[str] = None
     created_at: datetime.datetime
     completed_at: Optional[datetime.datetime] = None
@@ -73,7 +86,7 @@ class JobResponse(BaseModel):
 class PluginInstallRequest(BaseModel):
     packages: List[str] = Field(
         ...,
-        description="Python packages/plugins to install inside runner container"
+        description="Python packages or Git URLs to install inside runner container"
     )
     container_id: Optional[str] = Field(
         default=None,
@@ -99,10 +112,3 @@ class ContainerInfoResponse(BaseModel):
     remaining_idle_seconds: float
     active_jobs: int
     last_activity: datetime.datetime
-
-
-class FileItemResponse(BaseModel):
-    filename: str
-    size_bytes: int
-    modified_at: datetime.datetime
-    download_url: str

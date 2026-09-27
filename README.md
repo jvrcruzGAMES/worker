@@ -1,34 +1,38 @@
 # Mithril Worker
 
-The Worker service self-announces its presence, base URL, and health endpoint to the Orchestrator, provides health check endpoints, and emits periodic heartbeats to maintain its active status in the registry.
+The Worker is a self-announcing orchestrator node that manages dynamic `yt-dlp` execution containers via an asynchronous jobs system, installs Python plugins, isolates cookie credentials, streams finished downloads, and automatically destroys child containers after 20 minutes of inactivity.
 
-## Key Features
+## Features
 
-- **Automatic Announcement**:
-  - Automatically announces itself (`worker_id`, `base_url`, `health_endpoint`, `tags`, `metadata`) to the Orchestrator on startup with retry backoff.
-- **Heartbeat Loop**:
-  - Emits background heartbeat pings every 10s.
-- **Graceful Shutdown**:
-  - Automatically deregisters from Orchestrator upon container stop/SIGTERM.
-- **Health & Info Endpoints**:
-  - `GET /health`: Health status & uptime.
-  - `GET /info` or `GET /api/v1/info`: Worker identity and discovery configuration.
+- **Dynamic Child Container Lifecycle**:
+  - Automatically spins up child `yt-dlp-runner` containers (Python + FFmpeg + yt-dlp + HTTP supervisor) on demand.
+  - Monitors activity and automatically stops/removes containers after **20 minutes of inactivity** (configurable via `INACTIVITY_TIMEOUT_SECONDS=1200`).
+- **Isolated Cookie Handling**:
+  - Securely receives raw Netscape cookies from clients and writes them to `/app/cookies/`, completely isolated from the visible download folder (`/app/downloads/`).
+- **yt-dlp Python Plugins**:
+  - `POST /api/v1/plugins/install` allows dynamic pip installation of custom yt-dlp plugin packages inside the child runner container.
+- **Job & Download Management**:
+  - `POST /api/v1/jobs`: Create download job.
+  - `GET /api/v1/jobs/{job_id}`: Track progress (% completed, download speed, ETA, logs).
+  - `POST /api/v1/jobs/{job_id}/cancel`: Cancel active download.
+  - `GET /api/v1/jobs/{job_id}/download`: Stream completed media file.
+  - `GET /api/v1/files`: List downloaded media files.
+  - `GET /api/v1/files/{filename}`: Stream file.
+  - `GET /api/v1/containers`: Inspect running child containers and inactivity countdowns.
 
-## Environment Variables
+## API Overview
 
-| Variable | Default | Description |
+| Method | Route | Description |
 |---|---|---|
-| `WORKER_ID` | Auto-generated | Unique identifier for worker |
-| `WORKER_NAME` | `Mithril Worker` | Human readable worker name |
-| `WORKER_PORT` | `8001` | Worker listening port |
-| `WORKER_BASE_URL` | `http://localhost:8001` | Public or cluster reachable base URL |
-| `HEALTH_ENDPOINT` | `/health` | Path for health checks |
-| `ORCHESTRATOR_URL`| `http://localhost:8000` | URL of the Orchestrator |
-| `HEARTBEAT_INTERVAL_SECONDS` | `10` | Frequency of heartbeats |
-| `AUTO_ANNOUNCE` | `true` | Whether to self-register with orchestrator |
-
-## Quick Start (Docker)
-
-```bash
-docker compose up --build
-```
+| `GET` | `/health` | Worker health status, active jobs, and runner count |
+| `GET` | `/info` | Worker metadata, base URL, capabilities |
+| `POST` | `/api/v1/jobs` | Submit a yt-dlp download job |
+| `GET` | `/api/v1/jobs` | List all jobs |
+| `GET` | `/api/v1/jobs/{job_id}` | Get status & logs of job |
+| `POST` | `/api/v1/jobs/{job_id}/cancel` | Cancel active job |
+| `GET` | `/api/v1/jobs/{job_id}/download` | Stream media file for completed job |
+| `POST` | `/api/v1/plugins/install` | Install Python yt-dlp plugin |
+| `GET` | `/api/v1/containers` | List active runner containers & idle timers |
+| `DELETE`| `/api/v1/containers/{container_id}` | Terminate runner container manually |
+| `GET` | `/api/v1/files` | List files in download storage |
+| `GET` | `/api/v1/files/{filename}` | Stream file from storage |

@@ -4,8 +4,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import health, info
+from app.routers import health, info, jobs
 from app.services.announcer import announcer
+from app.services.inactivity_reaper import inactivity_reaper
 
 logging.basicConfig(
     level=logging.INFO if not settings.DEBUG else logging.DEBUG,
@@ -18,8 +19,10 @@ logger = logging.getLogger("worker")
 async def lifespan(app: FastAPI):
     logger.info(f"Starting Worker [{settings.WORKER_ID}]...")
     announcer.start()
+    inactivity_reaper.start()
     yield
     logger.info(f"Stopping Worker [{settings.WORKER_ID}]...")
+    await inactivity_reaper.stop()
     await announcer.stop()
 
 
@@ -39,6 +42,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(jobs.router)
 app.include_router(health.router)
 app.include_router(info.router)
 

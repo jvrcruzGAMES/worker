@@ -9,16 +9,37 @@ services:
       - "8001:8001"
     environment:
       - WORKER_ID=worker-node-1
-      - WORKER_NAME=Mithril Primary Worker
+      - WORKER_NAME=Mithril Worker Alpha
       - WORKER_HOST=0.0.0.0
       - WORKER_PORT=8001
-      - WORKER_BASE_URL=http://worker:8001
+      - WORKER_BASE_URL=http://worker-1:8001
       - HEALTH_ENDPOINT=/health
       - ORCHESTRATOR_URL=http://orchestrator:8000
-      - HEARTBEAT_INTERVAL_SECONDS=10
+      - DOCKER_NETWORK=mithril-network
+      - RUNNER_IMAGE=mithril-yt-dlp-runner:latest
+      - INACTIVITY_TIMEOUT_SECONDS=1200
       - AUTO_ANNOUNCE=true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - mithril-downloads:/app/downloads
+      - mithril-cookies:/app/cookies
     networks:
       - mithril-net
+
+  # Pre-build runner image so worker can spin up instances dynamically
+  yt-dlp-runner-base:
+    build:
+      context: ./yt-dlp-runner
+      dockerfile: Dockerfile
+    image: mithril-yt-dlp-runner:latest
+    restart: "no"
+    entrypoint: ["echo", "yt-dlp runner base image built successfully."]
+
+volumes:
+  mithril-downloads:
+    name: mithril-downloads
+  mithril-cookies:
+    name: mithril-cookies
 
 networks:
   mithril-net:

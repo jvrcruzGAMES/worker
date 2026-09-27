@@ -4,6 +4,32 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from app.config import settings
 from app.main import app
+from app.plugins import normalize_plugin_spec
+
+
+def test_normalize_plugin_spec():
+    # 1. Standard package names should not be altered
+    assert normalize_plugin_spec("bgutil-ytdlp-pot-provider") == "bgutil-ytdlp-pot-provider"
+    assert normalize_plugin_spec("yt-dlp-ejs>=0.8.0") == "yt-dlp-ejs>=0.8.0"
+
+    # 2. HTTPS Git URLs
+    assert normalize_plugin_spec("https://github.com/user/plugin-repo") == "git+https://github.com/user/plugin-repo"
+    assert normalize_plugin_spec("https://github.com/user/plugin-repo.git") == "git+https://github.com/user/plugin-repo.git"
+    assert normalize_plugin_spec("https://gitlab.com/user/plugin-repo.git@v1.0.0") == "git+https://gitlab.com/user/plugin-repo.git@v1.0.0"
+
+    # 3. HTTP Git URLs
+    assert normalize_plugin_spec("http://git.internal/repo.git") == "git+http://git.internal/repo.git"
+
+    # 4. SSH Git URLs
+    assert normalize_plugin_spec("git@github.com:user/plugin-repo.git") == "git+ssh://git@github.com/user/plugin-repo.git"
+
+    # 5. Shorthand forge domain without protocol
+    assert normalize_plugin_spec("github.com/user/plugin-repo") == "git+https://github.com/user/plugin-repo"
+    assert normalize_plugin_spec("gitlab.com/user/plugin-repo") == "git+https://gitlab.com/user/plugin-repo"
+
+    # 6. Already formatted VCS URLs
+    assert normalize_plugin_spec("git+https://github.com/user/repo") == "git+https://github.com/user/repo"
+    assert normalize_plugin_spec("git+ssh://git@github.com/user/repo.git") == "git+ssh://git@github.com/user/repo.git"
 
 
 @pytest.mark.asyncio

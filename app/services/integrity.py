@@ -111,5 +111,11 @@ class WorkerIntegrityService:
 
         return proof
 
+    def get_image_metadata(self) -> tuple[Optional[str], Optional[str]]:
+        """
+        Returns (image_ref, image_digest) from environment if available.
+        """
+        return settings.IMAGE_REF, settings.IMAGE_DIGEST
+
 
 worker_integrity = WorkerIntegrityService()

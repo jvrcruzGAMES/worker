@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     ORCHESTRATOR_URL: str = "http://localhost:8000"
     INTEGRITY_CHECK_ENABLED: bool = True
     GIT_COMMIT_SHA: Optional[str] = os.getenv("GIT_COMMIT_SHA", None)
+    IMAGE_REF: Optional[str] = os.getenv("IMAGE_REF", None)
+    IMAGE_DIGEST: Optional[str] = os.getenv("IMAGE_DIGEST", None)
     
     # Discovery announcement & heartbeat intervals
     AUTO_ANNOUNCE: bool = True

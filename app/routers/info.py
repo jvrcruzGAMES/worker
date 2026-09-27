@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.config import settings
 from app.routers.health import START_TIME
 from app.schemas import WorkerInfoResponse
+from app.services.announcer import announcer
 
 router = APIRouter(tags=["Discovery & Info"])
 
@@ -12,7 +13,7 @@ router = APIRouter(tags=["Discovery & Info"])
 async def worker_info():
     uptime = round(time.time() - START_TIME, 2)
     return WorkerInfoResponse(
-        worker_id=settings.WORKER_ID,
+        worker_id=announcer.worker_id or "unregistered",
         worker_name=settings.WORKER_NAME,
         base_url=settings.WORKER_BASE_URL,
         health_endpoint=settings.HEALTH_ENDPOINT,

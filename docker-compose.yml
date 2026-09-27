@@ -23,7 +23,6 @@ services:
     ports:
       - "8001:8001"
     environment:
-      - WORKER_ID=worker-node-1
       - WORKER_NAME=Mithril Worker Alpha
       - WORKER_HOST=0.0.0.0
       - WORKER_PORT=8001

@@ -4,6 +4,10 @@ The Worker is a self-announcing orchestrator node that manages dynamic `yt-dlp` 
 
 ## Features
 
+- **Orchestrator Managed ID & Worker Token Authentication**:
+  - Automatically announces itself on startup to the orchestrator.
+  - The orchestrator generates and manages the `worker_id` and assigns a worker authorization token.
+  - Subsequent heartbeat signals and unregister calls automatically pass `Authorization: Worker <token>`.
 - **Dynamic Child Container Lifecycle**:
   - Automatically spins up child `yt-dlp-runner` containers (Python + FFmpeg + yt-dlp + HTTP supervisor) on demand.
   - Monitors activity and automatically stops/removes containers after **20 minutes of inactivity** (configurable via `INACTIVITY_TIMEOUT_SECONDS=1200`).

@@ -17,17 +17,17 @@ logger = logging.getLogger("worker")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info(f"Starting Worker [{settings.WORKER_ID}]...")
+    logger.info(f"Starting {settings.WORKER_NAME}...")
     announcer.start()
     inactivity_reaper.start()
     yield
-    logger.info(f"Stopping Worker [{settings.WORKER_ID}]...")
+    logger.info(f"Stopping {settings.WORKER_NAME}...")
     await inactivity_reaper.stop()
     await announcer.stop()
 
 
 app = FastAPI(
-    title=f"{settings.WORKER_NAME} ({settings.WORKER_ID})",
+    title=settings.WORKER_NAME,
     version=settings.WORKER_VERSION,
     lifespan=lifespan,
     docs_url="/docs",

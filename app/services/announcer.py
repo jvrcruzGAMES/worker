@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Dict
+from typing import Dict, Optional
 import httpx
 
 from app.config import settings
@@ -13,10 +13,23 @@ class OrchestratorAnnouncer:
         self._running = False
         self._task: asyncio.Task | None = None
         self._is_registered = False
+        self._worker_id: Optional[str] = None
+        self._auth_token: Optional[str] = None
+
+    @property
+    def worker_id(self) -> Optional[str]:
+        return self._worker_id
+
+    @property
+    def auth_token(self) -> Optional[str]:
+        return self._auth_token
 
     @property
     def _headers(self) -> Dict[str, str]:
-        return {"Accept": "application/json"}
+        headers = {"Accept": "application/json"}
+        if self._auth_token:
+            headers["Authorization"] = f"Worker {self._auth_token}"
+        return headers
 
     def start(self):
         if not settings.AUTO_ANNOUNCE:
@@ -39,7 +52,7 @@ class OrchestratorAnnouncer:
                 pass
         
         # Attempt graceful deregistration
-        if self._is_registered:
+        if self._is_registered and self._auth_token:
             await self._unregister()
         logger.info("Announcer stopped.")
 
@@ -50,7 +63,9 @@ class OrchestratorAnnouncer:
                 registered = await self._announce()
                 if registered:
                     self._is_registered = True
-                    logger.info("Successfully announced worker to orchestrator.")
+                    logger.info(
+                        f"Successfully announced worker to orchestrator. Assigned Worker ID: '{self._worker_id}'"
+                    )
                     break
             except Exception as e:
                 logger.warning(
@@ -69,7 +84,6 @@ class OrchestratorAnnouncer:
     async def _announce(self) -> bool:
         announce_url = f"{settings.ORCHESTRATOR_URL}/api/v1/workers/announce"
         payload = {
-            "worker_id": settings.WORKER_ID,
             "name": settings.WORKER_NAME,
             "base_url": settings.WORKER_BASE_URL,
             "health_endpoint": settings.HEALTH_ENDPOINT,
@@ -78,8 +92,11 @@ class OrchestratorAnnouncer:
             "tags": settings.WORKER_TAGS,
         }
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(announce_url, json=payload, headers=self._headers)
+            resp = await client.post(announce_url, json=payload, headers={"Accept": "application/json"})
             if resp.status_code in [200, 201]:
+                data = resp.json()
+                self._worker_id = data.get("worker_id") or data.get("id")
+                self._auth_token = data.get("token")
                 return True
             else:
                 logger.warning(
@@ -88,30 +105,36 @@ class OrchestratorAnnouncer:
                 return False
 
     async def _send_heartbeat(self):
+        if not self._auth_token:
+            await self._announce()
+            return
+
         heartbeat_url = f"{settings.ORCHESTRATOR_URL}/api/v1/workers/heartbeat"
         payload = {
-            "worker_id": settings.WORKER_ID,
             "status": "online",
         }
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(heartbeat_url, json=payload, headers=self._headers)
-            if resp.status_code == 404:
-                logger.warning("Orchestrator forgot this worker. Re-announcing...")
+            if resp.status_code == 401 or resp.status_code == 404:
+                logger.warning("Orchestrator auth expired or rejected. Re-announcing...")
+                self._auth_token = None
+                self._is_registered = False
                 await self._announce()
             elif resp.status_code != 200:
                 logger.warning(f"Orchestrator heartbeat returned {resp.status_code}: {resp.text}")
 
     async def _unregister(self):
+        if not self._auth_token:
+            return
+
         unregister_url = f"{settings.ORCHESTRATOR_URL}/api/v1/workers/unregister"
-        payload = {
-            "worker_id": settings.WORKER_ID,
-        }
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
-                await client.post(unregister_url, json=payload, headers=self._headers)
+                await client.post(unregister_url, headers=self._headers)
                 logger.info("Gracefully unregistered from orchestrator.")
         except Exception as e:
             logger.warning(f"Could not unregister from orchestrator during shutdown: {e}")
 
 
 announcer = OrchestratorAnnouncer()
+

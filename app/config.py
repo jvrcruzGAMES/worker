@@ -7,14 +7,7 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-def default_worker_id() -> str:
-    host_suffix = socket.gethostname().lower()[:8]
-    random_suffix = uuid.uuid4().hex[:6]
-    return f"worker-{host_suffix}-{random_suffix}"
-
-
 class Settings(BaseSettings):
-    WORKER_ID: str = Field(default_factory=default_worker_id)
     WORKER_NAME: str = "Mithril Worker"
     WORKER_VERSION: str = "0.1.0"
     DEBUG: bool = False

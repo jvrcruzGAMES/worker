@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from typing import Dict
 import httpx
 
 from app.config import settings
@@ -12,6 +13,13 @@ class OrchestratorAnnouncer:
         self._running = False
         self._task: asyncio.Task | None = None
         self._is_registered = False
+
+    @property
+    def _headers(self) -> Dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if settings.MITHRIL_TOKEN:
+            headers["Authorization"] = f"Bearer {settings.MITHRIL_TOKEN}"
+        return headers
 
     def start(self):
         if not settings.AUTO_ANNOUNCE:
@@ -73,7 +81,7 @@ class OrchestratorAnnouncer:
             "tags": settings.WORKER_TAGS,
         }
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(announce_url, json=payload)
+            resp = await client.post(announce_url, json=payload, headers=self._headers)
             if resp.status_code in [200, 201]:
                 return True
             else:
@@ -89,7 +97,7 @@ class OrchestratorAnnouncer:
             "status": "online",
         }
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(heartbeat_url, json=payload)
+            resp = await client.post(heartbeat_url, json=payload, headers=self._headers)
             if resp.status_code == 404:
                 logger.warning("Orchestrator forgot this worker. Re-announcing...")
                 await self._announce()
@@ -103,7 +111,7 @@ class OrchestratorAnnouncer:
         }
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
-                await client.post(unregister_url, json=payload)
+                await client.post(unregister_url, json=payload, headers=self._headers)
                 logger.info("Gracefully unregistered from orchestrator.")
         except Exception as e:
             logger.warning(f"Could not unregister from orchestrator during shutdown: {e}")

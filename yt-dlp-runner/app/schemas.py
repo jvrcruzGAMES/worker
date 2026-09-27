@@ -21,6 +21,10 @@ class DownloadRequest(BaseModel):
         default=None,
         description="Optional format selector (e.g. 'bestvideo+bestaudio/best')"
     )
+    plugins: Optional[List[str]] = Field(
+        default_factory=list,
+        description="List of Python yt-dlp plugin packages to install prior to starting this download"
+    )
 
 
 class DownloadTaskResponse(BaseModel):

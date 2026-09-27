@@ -43,12 +43,17 @@ class JobCreateRequest(BaseModel):
         default=None,
         description="Optional format selector (e.g. 'bestvideo+bestaudio/best')"
     )
+    plugins: Optional[List[str]] = Field(
+        default_factory=list,
+        description="Optional list of Python yt-dlp plugin packages to install in runner prior to download"
+    )
 
 
 class JobResponse(BaseModel):
     job_id: str
     url: str
-    status: str  # pending, starting_container, downloading, completed, failed, cancelled
+    status: str  # pending, starting_container, installing_plugins, downloading, completed, failed, cancelled
+    plugins: List[str] = Field(default_factory=list)
     progress_percent: float = 0.0
     downloaded_bytes: int = 0
     total_bytes: Optional[int] = None

@@ -36,6 +36,7 @@ class JobService:
             job_id=job_id,
             url=request.url,
             status="starting_container",
+            plugins=request.plugins or [],
             created_at=now,
             logs=[f"Job created at {now.isoformat()}"],
         )
@@ -70,13 +71,14 @@ class JobService:
     ):
         job = self.jobs[job_id]
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=15.0) as client:
                 payload = {
                     "url": request.url,
                     "cookie_content": request.cookie_content,
                     "custom_args": request.custom_args,
                     "output_template": request.output_template,
                     "format_selection": request.format_selection,
+                    "plugins": request.plugins or [],
                 }
                 resp = await client.post(f"{runner.base_url}/download", json=payload)
                 if resp.status_code not in [200, 202]:

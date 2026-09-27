@@ -10,7 +10,8 @@ from typing import Dict, List, Optional
 import yt_dlp
 
 from app.config import settings
-from app.schemas import DownloadRequest, DownloadTaskResponse
+from app.plugins import plugin_manager
+from app.schemas import DownloadRequest, DownloadTaskResponse, PluginInstallRequest
 
 logger = logging.getLogger("yt_dlp_runner.downloader")
 
@@ -26,7 +27,7 @@ class DownloadTaskManager:
         self.last_activity_time = time.time()
 
     def get_active_tasks_count(self) -> int:
-        return sum(1 for t in self.tasks.values() if t.status in ["pending", "downloading", "processing"])
+        return sum(1 for t in self.tasks.values() if t.status in ["pending", "installing_plugins", "downloading", "processing"])
 
     async def start_download(self, request: DownloadRequest) -> DownloadTaskResponse:
         self.touch_activity()
@@ -52,6 +53,19 @@ class DownloadTaskManager:
 
         try:
             self.touch_activity()
+
+            # 0. Install plugins dynamically if specified in the job request
+            if request.plugins:
+                task.status = "installing_plugins"
+                task.logs.append(f"Installing {len(request.plugins)} plugin(s) for job: {request.plugins}")
+                plugin_resp = await plugin_manager.install_plugins(
+                    PluginInstallRequest(packages=request.plugins)
+                )
+                if plugin_resp.success:
+                    task.logs.append(f"Successfully installed plugins: {request.plugins}")
+                else:
+                    task.logs.append(f"Plugin install output/warning: {plugin_resp.stderr or plugin_resp.stdout}")
+
             task.status = "downloading"
             task.logs.append(f"Starting download for URL: {request.url}")
 

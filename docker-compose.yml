@@ -1,0 +1,26 @@
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mithril-worker-1
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      - WORKER_ID=worker-node-1
+      - WORKER_NAME=Mithril Primary Worker
+      - WORKER_HOST=0.0.0.0
+      - WORKER_PORT=8001
+      - WORKER_BASE_URL=http://worker:8001
+      - HEALTH_ENDPOINT=/health
+      - ORCHESTRATOR_URL=http://orchestrator:8000
+      - HEARTBEAT_INTERVAL_SECONDS=10
+      - AUTO_ANNOUNCE=true
+    networks:
+      - mithril-net
+
+networks:
+  mithril-net:
+    name: mithril-network
+    external: true

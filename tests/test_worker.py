@@ -309,5 +309,76 @@ async def test_orchestrator_token_tampering_and_mismatch(monkeypatch):
         assert resp_exp.status_code == 401
 
 
+@pytest.mark.asyncio
+async def test_docker_manager_cleanup_and_image_resolution():
+    class MockContainer:
+        def __init__(self, name, cid, status="running", labels=None):
+            self.name = name
+            self.id = cid
+            self.status = status
+            self.labels = labels or {}
+            self.stopped = False
+            self.removed = False
 
+        def stop(self, timeout=5):
+            self.stopped = True
 
+        def remove(self, v=False, force=True):
+            self.removed = True
+
+    class MockImages:
+        def __init__(self, pull_success=True, local_images=None):
+            self.pull_success = pull_success
+            self.local_images = local_images or []
+            self.pulled = []
+
+        def pull(self, tag):
+            if not self.pull_success:
+                raise Exception("Registry denied")
+            self.pulled.append(tag)
+            return tag
+
+        def get(self, tag):
+            if tag in self.local_images:
+                return tag
+            raise Exception("Image not found")
+
+    mock_c1 = MockContainer("mithril-yt-dlp-runner-abc123", "cid111111111111")
+    mock_c2 = MockContainer("unrelated-container", "cid222222222222")
+    mock_c3 = MockContainer("custom-runner", "cid333333333333", labels={"managed_by": "mithril-worker"})
+
+    class MockDockerClient:
+        def __init__(self, pull_success=True, local_images=None):
+            self.containers_list = [mock_c1, mock_c2, mock_c3]
+            self.images = MockImages(pull_success=pull_success, local_images=local_images)
+
+        class ContainersWrapper:
+            def __init__(self, parent):
+                self.parent = parent
+
+            def list(self, all=True):
+                return self.parent.containers_list
+
+        @property
+        def containers(self):
+            return self.ContainersWrapper(self)
+
+    # Test 1: Cleanup old runners
+    mock_client = MockDockerClient()
+    docker_manager._client = mock_client
+    cleaned = await docker_manager.cleanup_old_runners()
+    assert cleaned == 2
+    assert mock_c1.stopped is True and mock_c1.removed is True
+    assert mock_c3.stopped is True and mock_c3.removed is True
+    assert mock_c2.stopped is False and mock_c2.removed is False
+
+    # Test 2: Image resolution always attempts pulling latest from registry
+    target = settings.RUNNER_IMAGE
+    resolved = docker_manager._resolve_runner_image(mock_client)
+    assert resolved == target
+    assert target in mock_client.images.pulled
+
+    # Test 3: Fallback to local image when registry is inaccessible
+    fallback_client = MockDockerClient(pull_success=False, local_images=["ghcr.io/jvrcruzgames/yt-dlp-runner:latest"])
+    resolved_fallback = docker_manager._resolve_runner_image(fallback_client)
+    assert resolved_fallback == "ghcr.io/jvrcruzgames/yt-dlp-runner:latest"

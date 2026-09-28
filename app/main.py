@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.routers import health, info, jobs
 from app.services.announcer import announcer
+from app.services.docker_manager import docker_manager
 from app.services.inactivity_reaper import inactivity_reaper
 
 logging.basicConfig(
@@ -18,12 +19,14 @@ logger = logging.getLogger("worker")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.WORKER_NAME}...")
+    await docker_manager.cleanup_old_runners()
     announcer.start()
     inactivity_reaper.start()
     yield
     logger.info(f"Stopping {settings.WORKER_NAME}...")
     await inactivity_reaper.stop()
     await announcer.stop()
+    await docker_manager.cleanup_all_runners()
 
 
 app = FastAPI(

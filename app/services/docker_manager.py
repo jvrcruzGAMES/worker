@@ -116,29 +116,32 @@ class DockerManager:
 
     def _resolve_runner_image(self, client) -> str:
         """
-        Resolves the runner image to use. Checks if present locally, attempts
-        pulling if needed, and falls back to local candidates if the registry denies access.
+        Resolves the runner image to use.
+        Always attempts to pull the latest image available from the registry first,
+        and falls back to locally available images if registry access fails or is offline.
         """
         target = settings.RUNNER_IMAGE
 
-        # 1. Check if configured target image already exists in local Docker engine
+        # 1. Always attempt pulling the latest image from the registry first
+        try:
+            logger.info(f"Attempting to pull latest runner image '{target}' from registry...")
+            client.images.pull(target)
+            logger.info(f"Successfully pulled/verified latest runner image '{target}'.")
+            return target
+        except Exception as e:
+            logger.warning(
+                f"Could not pull latest image '{target}' from registry ({e}). Checking local images..."
+            )
+
+        # 2. Check if configured target image exists in local Docker engine
         try:
             client.images.get(target)
+            logger.info(f"Using locally cached runner image '{target}'.")
             return target
         except Exception:
             pass
 
-        # 2. Try pulling from registry
-        try:
-            logger.info(f"Runner image '{target}' not found locally. Attempting to pull from registry...")
-            client.images.pull(target)
-            return target
-        except Exception as e:
-            logger.warning(
-                f"Failed to pull image '{target}' from registry ({e}). Checking local fallback images..."
-            )
-
-        # 3. Check for any locally available runner images
+        # 3. Check for any locally available runner image candidates
         candidates = [
             "ghcr.io/jvrcruzgames/yt-dlp-runner:latest",
             "mithril-yt-dlp-runner:latest",
@@ -148,7 +151,7 @@ class DockerManager:
         for img in candidates:
             try:
                 client.images.get(img)
-                logger.info(f"Using local runner image '{img}'.")
+                logger.info(f"Using local fallback runner image '{img}'.")
                 return img
             except Exception:
                 continue
@@ -180,6 +183,10 @@ class DockerManager:
                     detach=True,
                     network=primary_network,
                     volumes=volumes,
+                    labels={
+                        "app": "mithril-yt-dlp-runner",
+                        "managed_by": "mithril-worker",
+                    },
                     environment={
                         "DOWNLOADS_DIR": "/app/downloads",
                         "COOKIES_DIR": "/app/cookies",
@@ -290,7 +297,6 @@ class DockerManager:
         self._containers[sim_id] = record
         return record
 
-
     async def list_containers(self) -> List[RunnerContainerRecord]:
         return list(self._containers.values())
 
@@ -316,6 +322,47 @@ class DockerManager:
                     logger.error(f"Failed to remove container {container_id}: {e}")
                     return False
             return record is not None
+
+    async def cleanup_old_runners(self) -> int:
+        """
+        Cleans up any dangling or orphaned runner containers on worker startup or restart.
+        """
+        cleaned_count = 0
+        async with self._lock:
+            client = self._get_docker_client()
+            if client:
+                try:
+                    all_containers = client.containers.list(all=True)
+                    for c in all_containers:
+                        c_name = c.name.lstrip("/")
+                        c_labels = c.labels or {}
+                        is_runner = (
+                            c_name.startswith("mithril-yt-dlp-runner-")
+                            or c_name == "mithril-yt-dlp-runner"
+                            or c_labels.get("app") == "mithril-yt-dlp-runner"
+                            or c_labels.get("managed_by") == "mithril-worker"
+                        )
+                        if is_runner:
+                            try:
+                                logger.info(f"Cleaning up old runner container {c_name} ({c.id[:12]})...")
+                                if c.status == "running":
+                                    c.stop(timeout=5)
+                                c.remove(v=False, force=True)
+                                cleaned_count += 1
+                                logger.info(f"Removed old runner container {c_name}.")
+                            except Exception as ex:
+                                logger.warning(f"Error removing old runner container {c_name}: {ex}")
+                except Exception as e:
+                    logger.warning(f"Failed to scan Docker daemon for old runner containers: {e}")
+
+            self._containers.clear()
+        return cleaned_count
+
+    async def cleanup_all_runners(self) -> int:
+        """
+        Gracefully stops and removes all active runner containers on worker shutdown.
+        """
+        return await self.cleanup_old_runners()
 
 
 docker_manager = DockerManager()

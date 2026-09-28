@@ -1,5 +1,6 @@
 import datetime
 from pathlib import Path
+import time
 import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -395,6 +396,7 @@ async def test_docker_manager_cleanup_and_image_resolution():
     fallback_client = MockDockerClient(pull_success=False, local_images=["ghcr.io/jvrcruzgames/yt-dlp-runner:latest"])
     resolved_fallback = docker_manager._resolve_runner_image(fallback_client)
     assert resolved_fallback == "ghcr.io/jvrcruzgames/yt-dlp-runner:latest"
+    docker_manager._client = None
 
 
 @pytest.mark.asyncio
@@ -530,7 +532,7 @@ async def test_job_file_list_and_hex_id_download_endpoints(monkeypatch):
         assert finfo["file_id"] == hex_id_thumb
         assert finfo["filename"] == "Test Video [123].webp"
 
-        # 3. Download specific file by hex ID route -> 200
+        # 3. Download first file (thumbnail) by hex ID route -> 200
         dl_thumb_resp = await client.get(
             f"/api/v1/jobs/{job.job_id}/files/{hex_id_thumb}/download",
             headers={"Authorization": f"Bearer {job.tracking_token}"}
@@ -538,10 +540,120 @@ async def test_job_file_list_and_hex_id_download_endpoints(monkeypatch):
         assert dl_thumb_resp.status_code == 200
         assert dl_thumb_resp.text == "thumbnail bytes"
 
-        # Subsequent download with same tracking token -> 401 Unauthorized
+        # Token must STILL be valid because video file has not been downloaded yet!
+        assert job_service.job_tracking_tokens.get(job.job_id) == job.tracking_token
+
+        # 4. Download second and final file (video) -> 200
+        dl_video_resp = await client.get(
+            f"/api/v1/jobs/{job.job_id}/files/{hex_id_video}/download",
+            headers={"Authorization": f"Bearer {job.tracking_token}"}
+        )
+        assert dl_video_resp.status_code == 200
+        assert dl_video_resp.text == "video bytes"
+
+        # NOW all files have been downloaded -> tracking token must be invalidated!
+        assert job_service.job_tracking_tokens.get(job.job_id) is None
+
+        # 5. Subsequent download attempt with the invalidated token -> 401
         subsequent_dl = await client.get(
-            f"/api/v1/jobs/{job.job_id}/files/{hex_id_thumb}/download",
+            f"/api/v1/jobs/{job.job_id}/files/{hex_id_video}/download",
             headers={"Authorization": f"Bearer {job.tracking_token}"}
         )
         assert subsequent_dl.status_code == 401
-        assert job_service.job_tracking_tokens.get(job.job_id) is None
+
+
+@pytest.mark.asyncio
+async def test_container_draining_spawns_new_container(monkeypatch):
+    # 1. Setup a container that has finished a job and is in the 5-min file availability window
+    c1 = RunnerContainerRecord(
+        container_id="runner-draining-1",
+        name="mithril-yt-dlp-runner-draining",
+        host_or_ip="localhost",
+        port=8080,
+    )
+    c1.last_job_completed_at = time.time() - 30  # 30 seconds ago
+    c1.is_draining = True
+    c1.active_jobs_count = 0
+    docker_manager._containers["runner-draining-1"] = c1
+
+    assert c1.can_accept_jobs is False
+
+    # Mock _spawn_runner_container to return a new runner
+    async def mock_spawn():
+        c2 = RunnerContainerRecord(
+            container_id="runner-fresh-2",
+            name="mithril-yt-dlp-runner-fresh",
+            host_or_ip="localhost",
+            port=8081,
+        )
+        docker_manager._containers[c2.container_id] = c2
+        return c2
+
+    monkeypatch.setattr(docker_manager, "_spawn_runner_container", mock_spawn)
+
+    # 2. When requesting a runner for a new job, it must NOT use c1 and must spawn a new container
+    new_runner = await docker_manager.get_or_create_runner()
+    assert new_runner.container_id != c1.container_id
+    assert new_runner.container_id == "runner-fresh-2"
+    assert new_runner.can_accept_jobs is True
+
+
+@pytest.mark.asyncio
+async def test_container_destroyed_invalidates_tracking_tokens():
+    job_id = "job-on-destroyed-container"
+    token = "token-destroyed-test-123"
+    job = JobResponse(
+        job_id=job_id,
+        tracking_token=token,
+        url="https://youtube.com/watch?v=sample",
+        status="completed",
+        container_id="runner-to-destroy-xyz",
+        created_at=datetime.datetime.now(datetime.timezone.utc),
+    )
+    job_service.jobs[job_id] = job
+    job_service.job_tracking_tokens[job_id] = token
+
+    c = RunnerContainerRecord(
+        container_id="runner-to-destroy-xyz",
+        name="mithril-yt-dlp-runner-destroy-test",
+        host_or_ip="localhost",
+        port=8080,
+    )
+    docker_manager._containers[c.container_id] = c
+
+    # When container is removed, the tracking token must be invalidated
+    await docker_manager.stop_and_remove_container(c.container_id)
+    assert job_service.job_tracking_tokens.get(job_id) is None
+
+
+@pytest.mark.asyncio
+async def test_inactivity_reaper_rules():
+    from app.services.inactivity_reaper import inactivity_reaper
+
+    now = time.time()
+
+    # Case A: Active job running -> Do NOT reap even if older than 20 mins
+    c_busy = RunnerContainerRecord("c-busy", "c-busy", "localhost", 8080)
+    c_busy.created_at = now - 1500  # 25 mins old
+    c_busy.active_jobs_count = 1
+    docker_manager._containers["c-busy"] = c_busy
+
+    # Case B: Post-download 5-minute file retention expired -> Reap!
+    c_retention_expired = RunnerContainerRecord("c-retention", "c-retention", "localhost", 8080)
+    c_retention_expired.created_at = now - 400
+    c_retention_expired.last_job_completed_at = now - 350  # > 300s (5 mins)
+    c_retention_expired.active_jobs_count = 0
+    docker_manager._containers["c-retention"] = c_retention_expired
+
+    # Case C: Container older than 20 mins with no active job -> Reap!
+    c_expired = RunnerContainerRecord("c-expired", "c-expired", "localhost", 8080)
+    c_expired.created_at = now - 1300  # > 1200s (20 mins)
+    c_expired.active_jobs_count = 0
+    docker_manager._containers["c-expired"] = c_expired
+
+    # Run reaper check
+    await inactivity_reaper._check_and_reap_containers()
+
+    assert "c-busy" in docker_manager._containers
+    assert "c-retention" not in docker_manager._containers
+    assert "c-expired" not in docker_manager._containers

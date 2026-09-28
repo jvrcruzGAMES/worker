@@ -32,9 +32,28 @@ class RunnerContainerRecord:
         self.last_activity: float = time.time()
         self.active_jobs_count: int = 0
         self.created_at: float = time.time()
+        self.last_job_completed_at: Optional[float] = None
+        self.is_draining: bool = False
+        self.draining_reason: Optional[str] = None
 
     def touch(self):
         self.last_activity = time.time()
+
+    @property
+    def lifetime_seconds(self) -> float:
+        return round(time.time() - self.created_at, 2)
+
+    @property
+    def remaining_lifetime_seconds(self) -> float:
+        remaining = settings.MAX_CONTAINER_LIFETIME_SECONDS - self.lifetime_seconds
+        return max(0.0, round(remaining, 2))
+
+    @property
+    def file_retention_remaining_seconds(self) -> Optional[float]:
+        if self.last_job_completed_at is None:
+            return None
+        elapsed = time.time() - self.last_job_completed_at
+        return max(0.0, round(settings.FILE_AVAILABLE_WINDOW_SECONDS - elapsed, 2))
 
     @property
     def idle_seconds(self) -> float:
@@ -46,6 +65,19 @@ class RunnerContainerRecord:
     def remaining_idle_seconds(self) -> float:
         remaining = settings.INACTIVITY_TIMEOUT_SECONDS - self.idle_seconds
         return max(0.0, round(remaining, 2))
+
+    @property
+    def can_accept_jobs(self) -> bool:
+        # Cannot accept new jobs if draining (in 5-min post-download retention window or due for deletion)
+        if self.is_draining:
+            return False
+        # Cannot accept new jobs if a job has completed and is in the after-download file available period
+        if self.last_job_completed_at is not None:
+            return False
+        # Cannot accept new jobs if container has reached/exceeded max lifetime (20 mins)
+        if self.remaining_lifetime_seconds <= 0:
+            return False
+        return True
 
 
 class DockerManager:
@@ -66,16 +98,17 @@ class DockerManager:
             except Exception as e:
                 logger.warning(f"Could not connect to Docker daemon: {e}. Running in simulation/mock mode.")
                 self._client = None
+            return self._client
         return self._client
 
     async def get_or_create_runner(self) -> RunnerContainerRecord:
         async with self._lock:
-            # 1. Check if we already have an active healthy runner
+            # 1. Check if we already have an active healthy runner that can accept jobs
             for record in list(self._containers.values()):
-                if await self._is_container_healthy(record):
+                if record.can_accept_jobs and await self._is_container_healthy(record):
                     record.touch()
                     return record
-                else:
+                elif not await self._is_container_healthy(record):
                     # Clean up unresponsive runner from internal tracking
                     self._containers.pop(record.container_id, None)
 
@@ -307,9 +340,16 @@ class DockerManager:
             record = self._containers.pop(container_id, None)
             client = self._get_docker_client()
 
+            # Clean up all tracking tokens associated with jobs on this container
+            try:
+                from app.services.job_service import job_service
+                job_service.invalidate_tokens_for_container(container_id)
+            except Exception as ex:
+                logger.debug(f"Error invalidating tokens for container {container_id}: {ex}")
+
             if client and record and not record.container_id.startswith("sim-"):
                 try:
-                    logger.info(f"Stopping and deleting inactive container {record.name} ({container_id[:12]})...")
+                    logger.info(f"Stopping and deleting container {record.name} ({container_id[:12]})...")
                     c = client.containers.get(container_id)
                     c.stop(timeout=5)
                     c.remove(v=False, force=True)

@@ -112,6 +112,11 @@ class ContainerInfoResponse(BaseModel):
     endpoint_url: str
     idle_seconds: float
     remaining_idle_seconds: float
+    lifetime_seconds: float = 0.0
+    remaining_lifetime_seconds: float = 0.0
+    file_retention_remaining_seconds: Optional[float] = None
+    is_draining: bool = False
+    can_accept_jobs: bool = True
     active_jobs: int
     last_activity: datetime.datetime
 

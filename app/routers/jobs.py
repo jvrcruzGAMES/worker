@@ -495,11 +495,16 @@ async def list_containers():
             ContainerInfoResponse(
                 container_id=c.container_id,
                 name=c.name,
-                status="running",
+                status="draining" if c.is_draining else "running",
                 ip_address=c.host_or_ip,
                 endpoint_url=c.base_url,
                 idle_seconds=c.idle_seconds,
                 remaining_idle_seconds=c.remaining_idle_seconds,
+                lifetime_seconds=c.lifetime_seconds,
+                remaining_lifetime_seconds=c.remaining_lifetime_seconds,
+                file_retention_remaining_seconds=c.file_retention_remaining_seconds,
+                is_draining=c.is_draining,
+                can_accept_jobs=c.can_accept_jobs,
                 active_jobs=c.active_jobs_count,
                 last_activity=datetime.datetime.fromtimestamp(
                     c.last_activity, tz=datetime.timezone.utc
@@ -551,7 +556,12 @@ async def _stream_file_response(
                     async def cleanup():
                         await client.aclose()
                         if job_id:
-                            job_service.invalidate_tracking_token(job_id)
+                            all_downloaded = job_service.record_file_download(job_id, identifier)
+                            if all_downloaded and container_id:
+                                if job_service.are_all_container_jobs_downloaded(container_id):
+                                    runner = docker_manager.get_container(container_id)
+                                    if runner and runner.active_jobs_count == 0:
+                                        await docker_manager.stop_and_remove_container(container_id)
 
                     return StreamingResponse(
                         r.aiter_raw(),
@@ -579,7 +589,13 @@ async def _stream_file_response(
                 async def cleanup():
                     await client.aclose()
                     if job_id:
-                        job_service.invalidate_tracking_token(job_id)
+                        all_downloaded = job_service.record_file_download(job_id, identifier)
+                        target_cid = container_id or c.container_id
+                        if all_downloaded and target_cid:
+                            if job_service.are_all_container_jobs_downloaded(target_cid):
+                                runner = docker_manager.get_container(target_cid)
+                                if runner and runner.active_jobs_count == 0:
+                                    await docker_manager.stop_and_remove_container(target_cid)
 
                 return StreamingResponse(
                     r.aiter_raw(),

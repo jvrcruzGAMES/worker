@@ -61,9 +61,13 @@ class Settings(BaseSettings):
         os.getenv("POT_PROVIDER_URL", "http://127.0.0.1:4416")
     )
     
-    # Inactivity timeout for child containers: 20 minutes = 1200 seconds
+    # Inactivity & Lifecycle timeouts for child containers
+    # Max container lifetime: 20 minutes = 1200 seconds (unless a job is actively running)
+    MAX_CONTAINER_LIFETIME_SECONDS: int = 1200
+    # Post-job file retention availability window: 5 minutes = 300 seconds
+    FILE_AVAILABLE_WINDOW_SECONDS: int = 300
     INACTIVITY_TIMEOUT_SECONDS: int = 1200
-    INACTIVITY_CHECK_INTERVAL_SECONDS: int = 30
+    INACTIVITY_CHECK_INTERVAL_SECONDS: int = 10
     
     # Worker tags and capabilities
     WORKER_TAGS: List[str] = Field(default_factory=lambda: ["yt-dlp", "media", "downloader"])

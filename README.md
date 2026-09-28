@@ -8,11 +8,16 @@ The official orchestrator for Mithril is hosted at: **`https://dl.jvrcruz.games/
 
 ## Setup Instructions
 
-### 1. Prerequisites
+### 1. Prerequisites & Container Dependencies
 
-- **Docker & Docker Compose**: Installed and running on the host system.
-- **Docker Socket Access**: The worker communicates with the Docker daemon (`/var/run/docker.sock`) to spawn ephemeral runner containers.
-- **Network Access**: The worker must be reachable by Mithril clients (or reverse proxy) and have outgoing access to reach the official Mithril orchestrator (`https://dl.jvrcruz.games/`).
+To run a Mithril Worker, the following services and permissions are required:
+- **Docker Engine & Docker Compose**: Installed and running on the host system.
+- **Docker Socket Access** (`/var/run/docker.sock`): The worker requires access to the Docker daemon to dynamically spawn, monitor, and clean up isolated child runner containers.
+- **Network Access**: The worker must be reachable externally via HTTPS (e.g. via Nginx, Caddy, or Cloudflare Tunnel) and have outbound access to communicate with the Mithril Orchestrator (`https://dl.jvrcruz.games/`).
+- **Required Sidecar Services (in same network)**:
+  - **`bgutil-provider`** (`brainicism/bgutil-ytdlp-pot-provider:latest` on port `4416`): Generates Proof-of-Origin (PO) tokens to bypass YouTube's "Sign in to confirm you're not a bot" detection.
+  - **`flaresolverr`** (`flaresolverr/flaresolverr:latest` on port `8191`): Solves Cloudflare and anti-bot challenges for protected media sources.
+  - **`yt-dlp-runner-base`** (`mithril-yt-dlp-runner:latest`): Pre-built base image for dynamic yt-dlp child containers.
 
 ---
 
@@ -31,6 +36,10 @@ WORKER_PORT=8001
 
 # Worker Admin Key (Required for managing containers and listing all jobs)
 ADMIN_KEY=your-secure-admin-secret-key
+
+# Sidecar & External Provider Configuration
+FLARESOLVERR_URL=http://flaresolverr:8191/v1
+BGUTIL_POT_PROVIDER_URL=http://bgutil-provider:4416
 
 # Docker and Runner Container Configuration
 RUNNER_IMAGE=mithril-yt-dlp-runner:latest
@@ -57,17 +66,42 @@ INTEGRITY_CHECK_ENABLED=true
 ```yaml
 version: "3.8"
 
-networks:
-  mithril-network:
-    name: mithril-network
-
-volumes:
-  mithril-downloads:
-    name: mithril-downloads
-  mithril-cookies:
-    name: mithril-cookies
-
 services:
+  # YouTube POT Token Provider required by yt-dlp child runner to bypass bot detection
+  bgutil-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider:latest
+    container_name: mithril-worker-bgutil-provider
+    restart: unless-stopped
+    init: true
+    ports:
+      - "4416:4416"
+    networks:
+      - mithril-net
+
+  # FlareSolverr service instance required by the worker and yt-dlp runner
+  flaresolverr:
+    image: flaresolverr/flaresolverr:latest
+    container_name: mithril-worker-flaresolverr
+    restart: unless-stopped
+    ports:
+      - "8191:8191"
+    environment:
+      - LOG_LEVEL=info
+      - LOG_HTML=false
+      - CAPTCHA_SOLVER=none
+      - PROXY=${FLARESOLVERR_PROXY:-}
+    networks:
+      - mithril-net
+
+  # Pre-build runner image so worker can spin up child container instances dynamically
+  yt-dlp-runner-base:
+    build:
+      context: ./yt-dlp-runner
+      dockerfile: Dockerfile
+    image: mithril-yt-dlp-runner:latest
+    restart: "no"
+    entrypoint: ["echo", "yt-dlp runner base image built successfully."]
+
   worker:
     build:
       context: .
@@ -81,19 +115,39 @@ services:
       - WORKER_BASE_URL=https://worker.yourdomain.com
       - ADMIN_KEY=your-secure-admin-secret-key
       - DOCKER_NETWORK=mithril-network
+      - RUNNER_IMAGE=mithril-yt-dlp-runner:latest
+      - FLARESOLVERR_URL=http://flaresolverr:8191/v1
+      - BGUTIL_POT_PROVIDER_URL=http://bgutil-provider:4416
       - SHARED_DOWNLOADS_VOLUME=mithril-downloads
       - SHARED_COOKIES_VOLUME=mithril-cookies
+      - INACTIVITY_TIMEOUT_SECONDS=1200
+      - AUTO_ANNOUNCE=true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - mithril-downloads:/app/downloads
       - mithril-cookies:/app/cookies
+    depends_on:
+      - flaresolverr
+      - bgutil-provider
+      - yt-dlp-runner-base
     networks:
-      - mithril-network
+      - mithril-net
+
+volumes:
+  mithril-downloads:
+    name: mithril-downloads
+  mithril-cookies:
+    name: mithril-cookies
+
+networks:
+  mithril-net:
+    name: mithril-network
+    driver: bridge
 ```
 
-Run the worker:
+Run the worker and all dependencies:
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
 ---

@@ -1,11 +1,22 @@
 services:
+  # YouTube POT Token Provider required by yt-dlp child runner to bypass bot detection
+  bgutil-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider:latest
+    container_name: mithril-worker-bgutil-provider
+    restart: unless-stopped
+    init: true
+    ports:
+      - "4416:4416"
+    networks:
+      - mithril-net
+
   # FlareSolverr service instance required by the worker and yt-dlp runner
   flaresolverr:
     image: flaresolverr/flaresolverr:latest
     container_name: mithril-worker-flaresolverr
     restart: unless-stopped
     ports:
-      - "38191:8191"
+      - "8191:8191"
     environment:
       - LOG_LEVEL=info
       - LOG_HTML=false
@@ -13,6 +24,15 @@ services:
       - PROXY=${FLARESOLVERR_PROXY:-}
     networks:
       - mithril-net
+
+  # Pre-build runner image so worker can spin up child container instances dynamically
+  yt-dlp-runner-base:
+    build:
+      context: ./yt-dlp-runner
+      dockerfile: Dockerfile
+    image: mithril-yt-dlp-runner:latest
+    restart: "no"
+    entrypoint: ["echo", "yt-dlp runner base image built successfully."]
 
   worker:
     build:
@@ -23,16 +43,18 @@ services:
     ports:
       - "8001:8001"
     environment:
-      - WORKER_NAME=Mithril Worker Alpha
+      - WORKER_NAME=${WORKER_NAME:-Mithril Worker}
       - WORKER_HOST=0.0.0.0
       - WORKER_PORT=8001
-      - WORKER_BASE_URL=http://worker-1:8001
+      - WORKER_BASE_URL=${WORKER_BASE_URL:-https://worker.yourdomain.com}
       - HEALTH_ENDPOINT=/health
-      - ORCHESTRATOR_URL=http://orchestrator:8000
+      - ORCHESTRATOR_URL=${ORCHESTRATOR_URL:-https://dl.jvrcruz.games}
+      - ADMIN_KEY=${ADMIN_KEY:-}
       - DOCKER_NETWORK=mithril-network
       - RUNNER_IMAGE=mithril-yt-dlp-runner:latest
-      - FLARESOLVERR_URL=http://flaresolverr:38191/v1
+      - FLARESOLVERR_URL=http://flaresolverr:8191/v1
       - FLARESOLVERR_PROXY=${FLARESOLVERR_PROXY:-}
+      - BGUTIL_POT_PROVIDER_URL=http://bgutil-provider:4416
       - INACTIVITY_TIMEOUT_SECONDS=1200
       - AUTO_ANNOUNCE=true
     volumes:
@@ -41,17 +63,10 @@ services:
       - mithril-cookies:/app/cookies
     depends_on:
       - flaresolverr
+      - bgutil-provider
+      - yt-dlp-runner-base
     networks:
       - mithril-net
-
-  # Pre-build runner image so worker can spin up instances dynamically
-  yt-dlp-runner-base:
-    build:
-      context: ./yt-dlp-runner
-      dockerfile: Dockerfile
-    image: mithril-yt-dlp-runner:latest
-    restart: "no"
-    entrypoint: ["echo", "yt-dlp runner base image built successfully."]
 
 volumes:
   mithril-downloads:
@@ -62,4 +77,4 @@ volumes:
 networks:
   mithril-net:
     name: mithril-network
-    external: true
+    driver: bridge

@@ -1,0 +1,3 @@
+[submodule "yt-dlp-runner"]
+	path = yt-dlp-runner
+	url = ./yt-dlp-runner

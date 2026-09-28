@@ -36,7 +36,9 @@ class Settings(BaseSettings):
     
     # yt-dlp child container & runner configuration
     DOCKER_HOST: Optional[str] = None
-    RUNNER_IMAGE: str = "mithril-yt-dlp-runner:latest"
+    RUNNER_IMAGE: str = "ghcr.io/jvrcruzgames/yt-dlp-runner:latest"
+    RUNNER_GIT_COMMIT_SHA: Optional[str] = os.getenv("RUNNER_GIT_COMMIT_SHA", None)
+    RUNNER_IMAGE_DIGEST: Optional[str] = os.getenv("RUNNER_IMAGE_DIGEST", None)
     DOCKER_NETWORK: str = "mithril-network"
     RUNNER_PORT: int = 8080
     

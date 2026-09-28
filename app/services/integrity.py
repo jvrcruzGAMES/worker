@@ -117,5 +117,51 @@ class WorkerIntegrityService:
         """
         return settings.IMAGE_REF, settings.IMAGE_DIGEST
 
+    def get_runner_commit_sha(self) -> str:
+        """
+        Discovers the current git commit SHA for the yt-dlp runner submodule / image.
+        """
+        if getattr(settings, "RUNNER_GIT_COMMIT_SHA", None):
+            return settings.RUNNER_GIT_COMMIT_SHA.strip()
+
+        runner_dir = self._root_dir / "yt-dlp-runner"
+        try:
+            res = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(runner_dir),
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip()
+        except Exception:
+            pass
+
+        # Try reading submodule git file or .git/modules/yt-dlp-runner/HEAD
+        git_head_file = runner_dir / ".git" / "HEAD"
+        if git_head_file.is_file():
+            try:
+                head_content = git_head_file.read_text().strip()
+                if head_content.startswith("ref:"):
+                    ref_path = head_content[4:].strip()
+                    ref_file = runner_dir / ".git" / ref_path
+                    if ref_file.is_file():
+                        return ref_file.read_text().strip()
+                elif len(head_content) in (40, 64):
+                    return head_content
+            except Exception:
+                pass
+
+        return "dev"
+
+    def get_runner_image_metadata(self) -> tuple[Optional[str], Optional[str]]:
+        """
+        Returns (runner_image_ref, runner_image_digest) from environment if available.
+        """
+        runner_image = getattr(settings, "RUNNER_IMAGE", "ghcr.io/jvrcruzgames/yt-dlp-runner:latest")
+        runner_digest = getattr(settings, "RUNNER_IMAGE_DIGEST", None)
+        return runner_image, runner_digest
+
 
 worker_integrity = WorkerIntegrityService()

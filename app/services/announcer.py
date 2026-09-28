@@ -118,6 +118,9 @@ class OrchestratorAnnouncer:
 
             # Step 2: Submit announcement with challenge proof and container image attestation
             image_ref, image_digest = worker_integrity.get_image_metadata()
+            runner_commit_sha = worker_integrity.get_runner_commit_sha()
+            runner_image_ref, runner_image_digest = worker_integrity.get_runner_image_metadata()
+
             announce_url = f"{settings.ORCHESTRATOR_URL}/api/v1/workers/announce"
             payload = {
                 "name": settings.WORKER_NAME,
@@ -131,6 +134,9 @@ class OrchestratorAnnouncer:
                 "commit_sha": commit_sha,
                 "image_ref": image_ref,
                 "image_digest": image_digest,
+                "runner_commit_sha": runner_commit_sha,
+                "runner_image_ref": runner_image_ref,
+                "runner_image_digest": runner_image_digest,
             }
             resp = await client.post(announce_url, json=payload, headers={"Accept": "application/json"})
             if resp.status_code in [200, 201]:

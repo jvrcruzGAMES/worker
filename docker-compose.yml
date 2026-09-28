@@ -1,30 +1,4 @@
 services:
-  # YouTube POT Token Provider required by yt-dlp child runner to bypass bot detection
-  bgutil-provider:
-    image: brainicism/bgutil-ytdlp-pot-provider:latest
-    container_name: mithril-worker-bgutil-provider
-    restart: unless-stopped
-    init: true
-    ports:
-      - "4416:4416"
-    networks:
-      - mithril-net
-
-  # FlareSolverr service instance required by the worker and yt-dlp runner
-  flaresolverr:
-    image: flaresolverr/flaresolverr:latest
-    container_name: mithril-worker-flaresolverr
-    restart: unless-stopped
-    ports:
-      - "38191:8191"
-    environment:
-      - LOG_LEVEL=info
-      - LOG_HTML=false
-      - CAPTCHA_SOLVER=none
-      - PROXY=${FLARESOLVERR_PROXY:-}
-    networks:
-      - mithril-net
-
   # Pre-build yt-dlp runner image so Docker daemon has it locally without registry authentication issues
   yt-dlp-runner:
     build:
@@ -51,16 +25,11 @@ services:
       - ORCHESTRATOR_URL=${ORCHESTRATOR_URL:-https://dl.jvrcruz.games}
       - ADMIN_KEY=${ADMIN_KEY:-}
       - DOCKER_NETWORK=mithril-network
-      - FLARESOLVERR_URL=http://flaresolverr:8191/v1
-      - FLARESOLVERR_PROXY=${FLARESOLVERR_PROXY:-}
-      - BGUTIL_POT_PROVIDER_URL=http://bgutil-provider:4416
       - INACTIVITY_TIMEOUT_SECONDS=1200
       - AUTO_ANNOUNCE=true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
-      - flaresolverr
-      - bgutil-provider
       - yt-dlp-runner
     networks:
       - mithril-net

@@ -46,14 +46,14 @@ class Settings(BaseSettings):
     DOCKER_NETWORK: str = "mithril-network"
     RUNNER_PORT: int = 8080
     
-    # FlareSolverr configuration (required for challenge resolution)
-    FLARESOLVERR_URL: str = "http://flaresolverr:8191/v1"
-    FLARESOLVERR_PROXY: Optional[str] = None
+    # FlareSolverr configuration (embedded by default inside child runner)
+    FLARESOLVERR_URL: str = os.getenv("FLARESOLVERR_URL", "http://127.0.0.1:8191/v1")
+    FLARESOLVERR_PROXY: Optional[str] = os.getenv("FLARESOLVERR_PROXY", None)
     
-    # bgutil YouTube POT token provider configuration
+    # bgutil YouTube POT token provider configuration (embedded by default inside child runner)
     BGUTIL_POT_PROVIDER_URL: Optional[str] = os.getenv(
         "BGUTIL_POT_PROVIDER_URL",
-        os.getenv("POT_PROVIDER_URL", None)
+        os.getenv("POT_PROVIDER_URL", "http://127.0.0.1:4416")
     )
     
     # Inactivity timeout for child containers: 20 minutes = 1200 seconds

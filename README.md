@@ -1,8 +1,24 @@
 # Mithril Worker
 
-The **Mithril Worker** is an orchestrator node designed to handle on-demand media downloads via `yt-dlp`. It dynamically spins up isolated runner containers, handles challenge resolution via FlareSolverr, protects credentials (cookies), streams completed downloads, and shuts down idle runner containers after 20 minutes of inactivity.
+The **Mithril Worker** is an orchestrator node designed to handle on-demand media downloads via `yt-dlp`. It dynamically spins up isolated runner containers, handles challenge resolution via embedded FlareSolverr, generates YouTube Proof-of-Origin (POT) tokens, protects credentials (cookies), streams completed downloads, and shuts down idle runner containers after 20 minutes of inactivity.
 
 The official orchestrator for Mithril is hosted at: **`https://dl.jvrcruz.games/`**
+
+---
+
+## Architecture & Security Highlights
+
+1. **Fully Self-Contained Runner (Zero External Dependency Containers)**:
+   - **Embedded YouTube POT Provider**: The `bgutil` POT token provider runs internally inside the verified `yt-dlp-runner` container on `127.0.0.1:4416`.
+   - **Embedded FlareSolverr**: Cloudflare challenge solving runs internally inside the verified `yt-dlp-runner` container on `127.0.0.1:8191` using browser TLS impersonation (`curl_cffi`).
+   - **Anti-Tampering Protection**: Hosters cannot substitute external sidecar containers (`flaresolverr`, `bgutil-provider`) to sniff credentials or alter responses.
+
+2. **Decoupled HTTP Streaming**:
+   - Downloads are streamed over internal HTTP streams directly from the runner container, with no shared Docker volume layer required.
+
+3. **Application-Layer Envelope Encryption**:
+   - Clients encrypt sensitive cookies, arguments, and plugins using X25519 ECDH + HKDF-SHA256 + ChaCha20-Poly1305.
+   - Intermediary reverse proxies and tunnels only see opaque ciphertext.
 
 ---
 
@@ -16,10 +32,7 @@ To run a Mithril Worker, the following services and permissions are required:
 - **Network Access**: The worker must be reachable externally via HTTPS (e.g. via Nginx, Caddy, or Cloudflare Tunnel) and have outbound access to communicate with the Mithril Orchestrator (`https://dl.jvrcruz.games/`).
 - **Container Images (Prebuilt on GitHub Container Registry)**:
   - **`ghcr.io/jvrcruzgames/worker:latest`**: Official, signed prebuilt worker image.
-  - **`ghcr.io/jvrcruzgames/yt-dlp-runner:latest`**: Official prebuilt runner image for dynamic yt-dlp child containers.
-- **Required Sidecar Services (in same network)**:
-  - **`bgutil-provider`** (`brainicism/bgutil-ytdlp-pot-provider:latest` on port `4416`): Generates Proof-of-Origin (PO) tokens to bypass YouTube's "Sign in to confirm you're not a bot" detection.
-  - **`flaresolverr`** (`flaresolverr/flaresolverr:latest` on port `8191`): Solves Cloudflare and anti-bot challenges for protected media sources.
+  - **`ghcr.io/jvrcruzgames/yt-dlp-runner:latest`**: Official prebuilt runner image for dynamic yt-dlp child containers (includes embedded POT provider and FlareSolverr).
 
 ---
 
@@ -38,10 +51,6 @@ WORKER_PORT=8001
 
 # Worker Admin Key (Required for managing containers and listing all jobs)
 ADMIN_KEY=your-secure-admin-secret-key
-
-# Sidecar & External Provider Configuration
-FLARESOLVERR_URL=http://flaresolverr:8191/v1
-BGUTIL_POT_PROVIDER_URL=http://bgutil-provider:4416
 
 # Docker Configuration (Worker automatically uses the official hardcoded runner image: ghcr.io/jvrcruzgames/yt-dlp-runner:latest)
 DOCKER_NETWORK=mithril-network
@@ -62,38 +71,12 @@ INTEGRITY_CHECK_ENABLED=true
 
 ### 3. Docker Compose Example
 
-Deploy the worker using official prebuilt images from GitHub Container Registry:
+Deploy the worker using official prebuilt images from GitHub Container Registry (no external sidecar containers required!):
 
 ```yaml
 version: "3.8"
 
 services:
-  # YouTube POT Token Provider required by yt-dlp child runner to bypass bot detection
-  bgutil-provider:
-    image: brainicism/bgutil-ytdlp-pot-provider:latest
-    container_name: mithril-worker-bgutil-provider
-    restart: unless-stopped
-    init: true
-    ports:
-      - "34416:4416"
-    networks:
-      - mithril-net
-
-  # FlareSolverr service instance required by the worker and yt-dlp runner
-  flaresolverr:
-    image: flaresolverr/flaresolverr:latest
-    container_name: mithril-worker-flaresolverr
-    restart: unless-stopped
-    ports:
-      - "38191:8191"
-    environment:
-      - LOG_LEVEL=info
-      - LOG_HTML=false
-      - CAPTCHA_SOLVER=none
-      - PROXY=${FLARESOLVERR_PROXY:-}
-    networks:
-      - mithril-net
-
   # Official Prebuilt Mithril Worker
   worker:
     image: ghcr.io/jvrcruzgames/worker:latest
@@ -106,15 +89,10 @@ services:
       - WORKER_BASE_URL=https://worker.yourdomain.com
       - ADMIN_KEY=your-secure-admin-secret-key
       - DOCKER_NETWORK=mithril-network
-      - FLARESOLVERR_URL=http://flaresolverr:8191/v1
-      - BGUTIL_POT_PROVIDER_URL=http://bgutil-provider:4416
       - INACTIVITY_TIMEOUT_SECONDS=1200
       - AUTO_ANNOUNCE=true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    depends_on:
-      - flaresolverr
-      - bgutil-provider
     networks:
       - mithril-net
 
@@ -129,7 +107,7 @@ Pull the prebuilt runner image and start the worker stack:
 # 1. Pull the prebuilt yt-dlp child runner image
 docker pull ghcr.io/jvrcruzgames/yt-dlp-runner:latest
 
-# 2. Launch the worker and sidecar stack
+# 2. Launch the worker stack
 docker compose up -d
 ```
 
@@ -184,5 +162,3 @@ Pass `X-Admin-Key: <ADMIN_KEY>` or `Authorization: Bearer <ADMIN_KEY>`.
 | `GET` | `/api/v1/jobs` | `ADMIN_KEY` | List all jobs currently held on this worker |
 | `GET` | `/api/v1/containers` | `ADMIN_KEY` | Inspect active runner containers and inactivity countdowns |
 | `DELETE` | `/api/v1/containers/{container_id}` | `ADMIN_KEY` | Manually terminate and clean up a runner container |
-
-

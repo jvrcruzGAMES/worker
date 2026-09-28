@@ -395,3 +395,34 @@ async def test_docker_manager_cleanup_and_image_resolution():
     fallback_client = MockDockerClient(pull_success=False, local_images=["ghcr.io/jvrcruzgames/yt-dlp-runner:latest"])
     resolved_fallback = docker_manager._resolve_runner_image(fallback_client)
     assert resolved_fallback == "ghcr.io/jvrcruzgames/yt-dlp-runner:latest"
+
+
+@pytest.mark.asyncio
+async def test_sse_job_events_stream():
+    # 1. Create a dummy job in job_service
+    import json
+    now = datetime.datetime.now(datetime.timezone.utc)
+    job = JobResponse(
+        job_id="sse-test-job-456",
+        tracking_token="sse-tracking-token-xyz",
+        url="https://youtube.com/watch?v=sample",
+        status="completed",
+        filename="sample_video.mp4",
+        created_at=now,
+        completed_at=now,
+    )
+    job_service.jobs[job.job_id] = job
+    job_service.job_tracking_tokens[job.job_id] = job.tracking_token
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Connect to SSE endpoint
+        resp = await client.get(
+            f"/api/v1/jobs/{job.job_id}/stream",
+            headers={"Authorization": f"Bearer {job.tracking_token}"}
+        )
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers.get("content-type", "")
+        text = resp.text
+        assert "data: {" in text
+        assert '"status": "completed"' in text
+        assert '"job_id": "sse-test-job-456"' in text

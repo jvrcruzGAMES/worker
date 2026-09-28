@@ -204,6 +204,67 @@ async def get_job(
     return job
 
 
+@router.get(
+    "/jobs/{job_id}/stream",
+    summary="Stream real-time job progress & completion via Server-Sent Events (SSE)"
+)
+@router.get(
+    "/jobs/{job_id}/events",
+    summary="Stream real-time job progress & completion via Server-Sent Events (SSE)"
+)
+async def stream_job_events(
+    job_id: str,
+    token: Optional[str] = Query(None, description="Tracking token returned during job creation"),
+    x_tracking_token: Optional[str] = Header(None, alias="X-Tracking-Token"),
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+    authorization: Optional[str] = Header(None),
+):
+    provided_token = extract_token_from_request(authorization, x_tracking_token, token)
+    is_admin = is_admin_authorized(x_admin_key, authorization)
+
+    if not is_admin and not job_service.validate_tracking_token(job_id, provided_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Valid job tracking token (or Admin Key) is required to stream events.",
+        )
+
+    job = job_service.get_job(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found."
+        )
+
+    import json
+
+    async def event_generator():
+        last_json = None
+        while True:
+            current_job = job_service.get_job(job_id)
+            if not current_job:
+                break
+
+            data_str = json.dumps(current_job.model_dump(mode="json"))
+            if data_str != last_json:
+                last_json = data_str
+                yield f"data: {data_str}\n\n"
+
+            if current_job.status in ["completed", "failed", "cancelled"]:
+                break
+
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.post(
     "/jobs/{job_id}/cancel",
     summary="Cancel a running download job (Tracking Token or Admin Key Required)"

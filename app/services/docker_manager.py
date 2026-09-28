@@ -90,6 +90,30 @@ class DockerManager:
         except Exception:
             return False
 
+    def _get_worker_networks(self, client) -> List[str]:
+        """Detect the Docker network(s) the current worker container is connected to."""
+        networks = []
+        try:
+            hostname = socket.gethostname()
+            self_c = None
+            try:
+                self_c = client.containers.get(hostname)
+            except Exception:
+                for c in client.containers.list():
+                    if c.id.startswith(hostname) or c.name.lstrip("/") == hostname or hostname in c.name:
+                        self_c = c
+                        break
+            if self_c:
+                net_map = self_c.attrs.get("NetworkSettings", {}).get("Networks", {})
+                networks = list(net_map.keys())
+                logger.info(f"Worker detected active Docker networks: {networks}")
+        except Exception as e:
+            logger.debug(f"Could not auto-detect worker network: {e}")
+
+        if not networks:
+            networks = [settings.DOCKER_NETWORK]
+        return networks
+
     async def _spawn_runner_container(self) -> RunnerContainerRecord:
         short_id = uuid.uuid4().hex[:8]
         container_name = f"mithril-yt-dlp-runner-{short_id}"
@@ -99,21 +123,8 @@ class DockerManager:
             try:
                 logger.info(f"Spawning child yt-dlp container '{container_name}' from image '{settings.RUNNER_IMAGE}'...")
 
-                # Auto-detect worker container's active Docker network
-                target_network = settings.DOCKER_NETWORK
-                try:
-                    hostname = socket.gethostname()
-                    self_container = client.containers.get(hostname)
-                    self_networks = list(self_container.attrs.get("NetworkSettings", {}).get("Networks", {}).keys())
-                    if self_networks:
-                        if settings.DOCKER_NETWORK in self_networks:
-                            target_network = settings.DOCKER_NETWORK
-                        else:
-                            target_network = self_networks[0]
-                            logger.info(f"Auto-detected worker docker network: '{target_network}'")
-                except Exception as net_err:
-                    logger.debug(f"Could not auto-detect self network (running on host or standalone): {net_err}")
-                    target_network = settings.DOCKER_NETWORK
+                worker_networks = self._get_worker_networks(client)
+                primary_network = worker_networks[0]
 
                 # Volume configuration
                 volumes = {
@@ -125,7 +136,7 @@ class DockerManager:
                     image=settings.RUNNER_IMAGE,
                     name=container_name,
                     detach=True,
-                    network=target_network,
+                    network=primary_network,
                     volumes=volumes,
                     environment={
                         "DOWNLOADS_DIR": "/app/downloads",
@@ -136,57 +147,90 @@ class DockerManager:
                     restart_policy={"Name": "no"},
                 )
 
-                # Fetch assigned IP address on network if available
-                port = settings.RUNNER_PORT
-                host = container_name
-                try:
-                    container.reload()
-                    net_map = container.attrs.get("NetworkSettings", {}).get("Networks", {})
-                    if target_network in net_map and net_map[target_network].get("IPAddress"):
-                        host = net_map[target_network]["IPAddress"]
-                    else:
-                        for n_conf in net_map.values():
-                            if n_conf.get("IPAddress"):
-                                host = n_conf["IPAddress"]
-                                break
-                except Exception:
-                    pass
+                # Attach to any additional networks worker belongs to
+                for extra_net in worker_networks[1:]:
+                    try:
+                        net_obj = client.networks.get(extra_net)
+                        net_obj.connect(container)
+                    except Exception as e:
+                        logger.debug(f"Could not connect container to extra network '{extra_net}': {e}")
 
+                port = settings.RUNNER_PORT
                 record = RunnerContainerRecord(
                     container_id=container.id,
                     name=container_name,
-                    host_or_ip=host,
+                    host_or_ip=container_name,
                     port=port,
                 )
                 self._containers[container.id] = record
 
-                # Wait for supervisor to be ready (up to 15 seconds)
+                # Wait for container IP & supervisor health check (up to 20 seconds)
                 ready = False
-                for _ in range(30):
+                for attempt in range(40):
                     await asyncio.sleep(0.5)
-                    if await self._is_container_healthy(record):
-                        ready = True
-                        break
+                    try:
+                        container.reload()
+                        net_map = container.attrs.get("NetworkSettings", {}).get("Networks", {})
+                        
+                        # Try to resolve IP on shared network
+                        discovered_ip = None
+                        for net_name in worker_networks:
+                            if net_name in net_map and net_map[net_name].get("IPAddress"):
+                                discovered_ip = net_map[net_name]["IPAddress"]
+                                break
+                        
+                        if not discovered_ip:
+                            for n_data in net_map.values():
+                                if n_data.get("IPAddress"):
+                                    discovered_ip = n_data["IPAddress"]
+                                    break
 
-                if not ready and host != container_name:
-                    # Try falling back to container_name DNS
-                    record.host_or_ip = container_name
-                    record.base_url = f"http://{container_name}:{port}"
-                    for _ in range(10):
-                        await asyncio.sleep(0.5)
+                        # Check container health using discovered IP first
+                        if discovered_ip:
+                            record.host_or_ip = discovered_ip
+                            record.base_url = f"http://{discovered_ip}:{port}"
+                            if await self._is_container_healthy(record):
+                                ready = True
+                                break
+
+                        # Fall back to testing container name DNS
+                        record.host_or_ip = container_name
+                        record.base_url = f"http://{container_name}:{port}"
                         if await self._is_container_healthy(record):
                             ready = True
                             break
 
+                    except Exception as poll_err:
+                        logger.debug(f"Polling runner container readiness: {poll_err}")
+
                 if not ready:
-                    logger.warning(f"Container {container_name} started at {record.base_url} but supervisor health check timed out. Proceeding anyway.")
+                    container_status = "unknown"
+                    container_logs = ""
+                    try:
+                        container.reload()
+                        container_status = container.status
+                        container_logs = container.logs(tail=30).decode("utf-8", errors="replace")
+                    except Exception:
+                        pass
+                    
+                    self._containers.pop(container.id, None)
+                    try:
+                        container.stop(timeout=2)
+                        container.remove(v=False, force=True)
+                    except Exception:
+                        pass
+
+                    raise RuntimeError(
+                        f"Runner container '{container_name}' failed health check at {record.base_url} (status={container_status}). Logs:\n{container_logs}"
+                    )
 
                 logger.info(f"Container {container_name} ({container.id[:12]}) ready at {record.base_url}")
                 return record
 
             except Exception as e:
                 logger.error(f"Error spinning up docker container: {e}", exc_info=True)
-                # Fallback to simulated local record only if docker client failed or is mocked
+                if client:
+                    raise
                 return self._create_simulated_record(container_name)
         else:
             return self._create_simulated_record(container_name)

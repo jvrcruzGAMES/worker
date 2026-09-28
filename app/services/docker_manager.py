@@ -114,6 +114,47 @@ class DockerManager:
             networks = [settings.DOCKER_NETWORK]
         return networks
 
+    def _resolve_runner_image(self, client) -> str:
+        """
+        Resolves the runner image to use. Checks if present locally, attempts
+        pulling if needed, and falls back to local candidates if the registry denies access.
+        """
+        target = settings.RUNNER_IMAGE
+
+        # 1. Check if configured target image already exists in local Docker engine
+        try:
+            client.images.get(target)
+            return target
+        except Exception:
+            pass
+
+        # 2. Try pulling from registry
+        try:
+            logger.info(f"Runner image '{target}' not found locally. Attempting to pull from registry...")
+            client.images.pull(target)
+            return target
+        except Exception as e:
+            logger.warning(
+                f"Failed to pull image '{target}' from registry ({e}). Checking local fallback images..."
+            )
+
+        # 3. Check for any locally available runner images
+        candidates = [
+            "ghcr.io/jvrcruzgames/yt-dlp-runner:latest",
+            "mithril-yt-dlp-runner:latest",
+            "yt-dlp-runner:latest",
+            "yt-dlp-runner",
+        ]
+        for img in candidates:
+            try:
+                client.images.get(img)
+                logger.info(f"Using local runner image '{img}'.")
+                return img
+            except Exception:
+                continue
+
+        return target
+
     async def _spawn_runner_container(self) -> RunnerContainerRecord:
         short_id = uuid.uuid4().hex[:8]
         container_name = f"mithril-yt-dlp-runner-{short_id}"
@@ -121,7 +162,8 @@ class DockerManager:
 
         if client:
             try:
-                logger.info(f"Spawning child yt-dlp container '{container_name}' from image '{settings.RUNNER_IMAGE}'...")
+                runner_image = self._resolve_runner_image(client)
+                logger.info(f"Spawning child yt-dlp container '{container_name}' from image '{runner_image}'...")
 
                 worker_networks = self._get_worker_networks(client)
                 primary_network = worker_networks[0]
@@ -133,7 +175,7 @@ class DockerManager:
                 }
 
                 container = client.containers.run(
-                    image=settings.RUNNER_IMAGE,
+                    image=runner_image,
                     name=container_name,
                     detach=True,
                     network=primary_network,

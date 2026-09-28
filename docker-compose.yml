@@ -25,6 +25,15 @@ services:
     networks:
       - mithril-net
 
+  # Pre-build yt-dlp runner image so Docker daemon has it locally without registry authentication issues
+  yt-dlp-runner:
+    build:
+      context: ./yt-dlp-runner
+      dockerfile: Dockerfile
+    image: ghcr.io/jvrcruzgames/yt-dlp-runner:latest
+    restart: "no"
+    entrypoint: ["echo", "yt-dlp runner image ready."]
+
   worker:
     build:
       context: .
@@ -54,6 +63,7 @@ services:
     depends_on:
       - flaresolverr
       - bgutil-provider
+      - yt-dlp-runner
     networks:
       - mithril-net
 

@@ -3,9 +3,11 @@ import hashlib
 import mimetypes
 import os
 from pathlib import Path
+import secrets
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import FileResponse, StreamingResponse
+from starlette.background import BackgroundTask
 import httpx
 
 from app.config import settings
@@ -14,8 +16,7 @@ from app.schemas import (
     FileItemResponse,
     JobCreateRequest,
     JobResponse,
-    PluginInstallRequest,
-    PluginInstallResponse,
+    SingleUseTokenResponse,
 )
 from app.services.docker_manager import docker_manager
 from app.services.job_service import job_service
@@ -23,28 +24,151 @@ from app.services.job_service import job_service
 router = APIRouter(prefix="/api/v1", tags=["Jobs & Downloads"])
 
 
-def _generate_hex_id(filename: str, filepath: Optional[str] = None) -> str:
-    salt = ""
-    if filepath and os.path.exists(filepath):
-        salt = f":{os.path.getmtime(filepath)}:{os.path.getsize(filepath)}"
-    return hashlib.sha256(f"{filename}{salt}".encode()).hexdigest()[:16]
+# ============================================================================
+# Security & Authentication Helpers
+# ============================================================================
 
+def extract_token_from_request(
+    authorization: Optional[str] = None,
+    custom_header: Optional[str] = None,
+    query_token: Optional[str] = None,
+) -> Optional[str]:
+    if custom_header:
+        return custom_header.strip()
+    if query_token:
+        return query_token.strip()
+    if authorization:
+        parts = authorization.split()
+        if len(parts) == 2 and parts[0].lower() in ["bearer", "token", "worker"]:
+            return parts[1].strip()
+        elif len(parts) == 1:
+            return parts[0].strip()
+    return None
+
+
+def require_admin_key(
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+    authorization: Optional[str] = Header(None),
+) -> bool:
+    if not settings.ADMIN_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin operations are disabled because ADMIN_KEY is not configured on this worker.",
+        )
+    candidate = None
+    if x_admin_key:
+        candidate = x_admin_key.strip()
+    elif authorization:
+        parts = authorization.split()
+        if len(parts) == 2 and parts[0].lower() in ["bearer", "admin"]:
+            candidate = parts[1].strip()
+        elif len(parts) == 1:
+            candidate = parts[0].strip()
+
+    if candidate and secrets.compare_digest(candidate, settings.ADMIN_KEY):
+        return True
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or missing admin key.",
+    )
+
+
+def is_admin_authorized(
+    x_admin_key: Optional[str] = None,
+    authorization: Optional[str] = None,
+) -> bool:
+    if not settings.ADMIN_KEY:
+        return False
+    candidate = None
+    if x_admin_key:
+        candidate = x_admin_key.strip()
+    elif authorization:
+        parts = authorization.split()
+        if len(parts) == 2 and parts[0].lower() in ["bearer", "admin"]:
+            candidate = parts[1].strip()
+        elif len(parts) == 1:
+            candidate = parts[0].strip()
+    return bool(candidate and secrets.compare_digest(candidate, settings.ADMIN_KEY))
+
+
+def require_orchestrator_or_admin(
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+) -> bool:
+    if is_admin_authorized(x_admin_key, authorization):
+        return True
+
+    from app.services.announcer import announcer
+    # Verify orchestrator worker auth token
+    if announcer.auth_token:
+        candidate = None
+        if authorization:
+            parts = authorization.split()
+            if len(parts) == 2 and parts[0].lower() in ["worker", "bearer"]:
+                candidate = parts[1].strip()
+            elif len(parts) == 1:
+                candidate = parts[0].strip()
+
+        if candidate and secrets.compare_digest(candidate, announcer.auth_token):
+            return True
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized orchestrator request.",
+        )
+    return True
+
+
+# ============================================================================
+# Single-Use Token Handshake
+# ============================================================================
+
+@router.post(
+    "/tokens/single-use",
+    response_model=SingleUseTokenResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Issue a single-use auth token for job creation",
+    description="Called by the orchestrator after a client chooses this worker. Requires orchestrator worker auth token."
+)
+async def create_single_use_token(
+    _: bool = Depends(require_orchestrator_or_admin),
+):
+    token = job_service.generate_single_use_token(expires_in=300)
+    return SingleUseTokenResponse(token=token, expires_in=300)
+
+
+# ============================================================================
+# Jobs Endpoints
+# ============================================================================
 
 @router.post(
     "/jobs",
     response_model=JobResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Create a yt-dlp download job",
-    description="Spins up child yt-dlp container, installs any requested plugins, isolates cookie credentials, and tracks all generated files."
+    summary="Create a yt-dlp download job (Single-Use Token Required)",
+    description="Client creates a job using the single-use token obtained via Orchestrator handshake. Returns job status and tracking token."
 )
-async def create_job(request: JobCreateRequest):
+async def create_job(
+    request: JobCreateRequest,
+    authorization: Optional[str] = Header(None),
+    x_single_use_token: Optional[str] = Header(None, alias="X-Single-Use-Token"),
+    token: Optional[str] = Query(None, description="Single-use token"),
+):
+    single_use_token = extract_token_from_request(authorization, x_single_use_token, token)
+    if not job_service.validate_and_consume_single_use_token(single_use_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid, expired, or already-used single-use authorization token.",
+        )
     return await job_service.create_job(request)
 
 
 @router.get(
     "/jobs",
     response_model=List[JobResponse],
-    summary="List all download jobs with their generated files table"
+    dependencies=[Depends(require_admin_key)],
+    summary="List all download jobs (Admin Key Required)",
+    description="Listing all jobs is restricted to administrators and requires the worker ADMIN_KEY."
 )
 async def list_jobs():
     return job_service.list_jobs()
@@ -53,9 +177,24 @@ async def list_jobs():
 @router.get(
     "/jobs/{job_id}",
     response_model=JobResponse,
-    summary="Get job status, progress, and table of generated files"
+    summary="Get job status & progress (Tracking Token or Admin Key Required)"
 )
-async def get_job(job_id: str):
+async def get_job(
+    job_id: str,
+    token: Optional[str] = Query(None, description="Tracking token returned during job creation"),
+    x_tracking_token: Optional[str] = Header(None, alias="X-Tracking-Token"),
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+    authorization: Optional[str] = Header(None),
+):
+    provided_token = extract_token_from_request(authorization, x_tracking_token, token)
+    is_admin = is_admin_authorized(x_admin_key, authorization)
+
+    if not is_admin and not job_service.validate_tracking_token(job_id, provided_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Valid job tracking token (or Admin Key) is required.",
+        )
+
     job = job_service.get_job(job_id)
     if not job:
         raise HTTPException(
@@ -67,9 +206,24 @@ async def get_job(job_id: str):
 
 @router.post(
     "/jobs/{job_id}/cancel",
-    summary="Cancel a running download job"
+    summary="Cancel a running download job (Tracking Token or Admin Key Required)"
 )
-async def cancel_job(job_id: str):
+async def cancel_job(
+    job_id: str,
+    token: Optional[str] = Query(None, description="Tracking token returned during job creation"),
+    x_tracking_token: Optional[str] = Header(None, alias="X-Tracking-Token"),
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+    authorization: Optional[str] = Header(None),
+):
+    provided_token = extract_token_from_request(authorization, x_tracking_token, token)
+    is_admin = is_admin_authorized(x_admin_key, authorization)
+
+    if not is_admin and not job_service.validate_tracking_token(job_id, provided_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Valid job tracking token (or Admin Key) is required.",
+        )
+
     success = await job_service.cancel_job(job_id)
     if not success:
         raise HTTPException(
@@ -81,12 +235,25 @@ async def cancel_job(job_id: str):
 
 @router.get(
     "/jobs/{job_id}/download",
-    summary="Download finished media file for a job (supports optional ?file_id=hex)"
+    summary="Download finished media file (Tracking Token or Admin Key Required; Invalidates Token on Finish)"
 )
 async def download_job_file(
     job_id: str,
-    file_id: Optional[str] = Query(None, description="Optional specific hex file ID from the job's files table")
+    file_id: Optional[str] = Query(None, description="Optional specific hex file ID from the job's files table"),
+    token: Optional[str] = Query(None, description="Tracking token returned during job creation"),
+    x_tracking_token: Optional[str] = Header(None, alias="X-Tracking-Token"),
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+    authorization: Optional[str] = Header(None),
 ):
+    provided_token = extract_token_from_request(authorization, x_tracking_token, token)
+    is_admin = is_admin_authorized(x_admin_key, authorization)
+
+    if not is_admin and not job_service.validate_tracking_token(job_id, provided_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Valid job tracking token (or Admin Key) is required to download.",
+        )
+
     job = job_service.get_job(job_id)
     if not job:
         raise HTTPException(
@@ -99,7 +266,6 @@ async def download_job_file(
             detail=f"Job {job_id} is not completed (current status: {job.status})."
         )
 
-    # If specific file_id requested
     target_filename = job.filename
     target_id = file_id
 
@@ -119,22 +285,23 @@ async def download_job_file(
             detail="No files generated by this job."
         )
 
-    return await _stream_file_response(target_id or target_filename, target_filename, job.container_id)
+    return await _stream_file_response(
+        identifier=target_id or target_filename,
+        filename=target_filename,
+        container_id=job.container_id,
+        job_id=job_id,
+    )
 
 
-@router.post(
-    "/plugins/install",
-    response_model=PluginInstallResponse,
-    summary="Install Python plugin in yt-dlp runner container"
-)
-async def install_plugin(request: PluginInstallRequest):
-    return await job_service.install_plugins(request)
-
+# ============================================================================
+# Admin Container Management Endpoints
+# ============================================================================
 
 @router.get(
     "/containers",
     response_model=List[ContainerInfoResponse],
-    summary="List active runner containers and inactivity countdown"
+    dependencies=[Depends(require_admin_key)],
+    summary="List active runner containers (Admin Key Required)"
 )
 async def list_containers():
     containers = await docker_manager.list_containers()
@@ -160,7 +327,8 @@ async def list_containers():
 
 @router.delete(
     "/containers/{container_id}",
-    summary="Manually stop and remove runner container"
+    dependencies=[Depends(require_admin_key)],
+    summary="Manually stop and remove runner container (Admin Key Required)"
 )
 async def remove_container(container_id: str):
     removed = await docker_manager.stop_and_remove_container(container_id)
@@ -172,98 +340,29 @@ async def remove_container(container_id: str):
     return {"status": "success", "message": f"Container {container_id} removed."}
 
 
-@router.get(
-    "/files",
-    response_model=List[FileItemResponse],
-    summary="Table of all downloaded files with hex file IDs and download URLs"
-)
-async def list_files():
-    downloads_path = Path(settings.LOCAL_DOWNLOADS_PATH)
-    file_items: List[FileItemResponse] = []
-
-    # 1. Inspect local shared storage
-    if downloads_path.exists():
-        for f in downloads_path.iterdir():
-            if f.is_file():
-                stat = f.stat()
-                fid = _generate_hex_id(f.name, str(f))
-                mime_type, _ = mimetypes.guess_type(f.name)
-                job_service.file_map[fid] = (f.name, None)
-                file_items.append(
-                    FileItemResponse(
-                        file_id=fid,
-                        filename=f.name,
-                        size_bytes=stat.st_size,
-                        mime_type=mime_type or "application/octet-stream",
-                        download_url=f"/api/v1/files/{fid}/download",
-                        modified_at=datetime.datetime.fromtimestamp(
-                            stat.st_mtime, tz=datetime.timezone.utc
-                        ),
-                    )
-                )
-
-    # 2. If local empty or additionally query runner containers
-    if not file_items:
-        containers = await docker_manager.list_containers()
-        for c in containers:
-            try:
-                c.touch()
-                async with httpx.AsyncClient(timeout=3.0) as client:
-                    resp = await client.get(f"{c.base_url}/files")
-                    if resp.status_code == 200:
-                        for rf in resp.json():
-                            fid = rf["file_id"]
-                            job_service.file_map[fid] = (rf["filename"], c.container_id)
-                            file_items.append(
-                                FileItemResponse(
-                                    file_id=fid,
-                                    filename=rf["filename"],
-                                    size_bytes=rf["size_bytes"],
-                                    mime_type=rf.get("mime_type", "application/octet-stream"),
-                                    download_url=f"/api/v1/files/{fid}/download",
-                                    modified_at=datetime.datetime.fromisoformat(
-                                        rf["modified_at"]
-                                    ) if isinstance(rf["modified_at"], str) else rf["modified_at"],
-                                )
-                            )
-            except Exception:
-                pass
-
-    return file_items
-
-
-@router.get(
-    "/files/{file_id_or_name}/download",
-    summary="Download/stream file identified by its hex file ID (or filename)"
-)
-@router.get(
-    "/files/{file_id_or_name}",
-    include_in_schema=False
-)
-async def stream_file(file_id_or_name: str):
-    # Lookup in job service file map
-    target_filename = file_id_or_name
-    container_id = None
-
-    if file_id_or_name in job_service.file_map:
-        target_filename, container_id = job_service.file_map[file_id_or_name]
-
-    return await _stream_file_response(file_id_or_name, target_filename, container_id)
-
+# ============================================================================
+# Internal File Streaming Helpers
+# ============================================================================
 
 async def _stream_file_response(
-    identifier: str, filename: Optional[str] = None, container_id: Optional[str] = None
+    identifier: str,
+    filename: Optional[str] = None,
+    container_id: Optional[str] = None,
+    job_id: Optional[str] = None,
 ):
     # 1. Local path check
     downloads_path = Path(settings.LOCAL_DOWNLOADS_PATH)
     if filename:
         local_file = downloads_path / filename
         if local_file.is_file() and local_file.exists():
-            return FileResponse(
+            resp = FileResponse(
                 path=str(local_file),
                 filename=filename,
                 media_type="application/octet-stream",
             )
+            if job_id:
+                resp.background = BackgroundTask(job_service.invalidate_tracking_token, job_id)
+            return resp
 
     # 2. Direct container lookup if known
     if container_id:
@@ -277,11 +376,17 @@ async def _stream_file_response(
                 headers = dict(r.headers)
                 if filename and "content-disposition" not in [k.lower() for k in headers]:
                     headers["content-disposition"] = f'attachment; filename="{filename}"'
+
+                async def cleanup():
+                    await client.aclose()
+                    if job_id:
+                        job_service.invalidate_tracking_token(job_id)
+
                 return StreamingResponse(
                     r.aiter_raw(),
                     status_code=200,
                     headers=headers,
-                    background=client.aclose,
+                    background=cleanup,
                 )
             await client.aclose()
 
@@ -297,11 +402,17 @@ async def _stream_file_response(
                 headers = dict(r.headers)
                 if filename and "content-disposition" not in [k.lower() for k in headers]:
                     headers["content-disposition"] = f'attachment; filename="{filename}"'
+
+                async def cleanup():
+                    await client.aclose()
+                    if job_id:
+                        job_service.invalidate_tracking_token(job_id)
+
                 return StreamingResponse(
                     r.aiter_raw(),
                     status_code=200,
                     headers=headers,
-                    background=client.aclose,
+                    background=cleanup,
                 )
             await client.aclose()
         except Exception:
@@ -311,3 +422,4 @@ async def _stream_file_response(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"File '{identifier}' could not be located."
     )
+

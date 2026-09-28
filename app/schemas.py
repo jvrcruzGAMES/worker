@@ -49,6 +49,11 @@ class JobCreateRequest(BaseModel):
     )
 
 
+class SingleUseTokenResponse(BaseModel):
+    token: str = Field(..., description="Single-use token for job creation")
+    expires_in: int = Field(default=300, description="Token validity in seconds")
+
+
 class FileItemResponse(BaseModel):
     file_id: str = Field(..., description="16-character hex identifier for the file")
     filename: str = Field(..., description="Original filename with extension")
@@ -60,6 +65,10 @@ class FileItemResponse(BaseModel):
 
 class JobResponse(BaseModel):
     job_id: str
+    tracking_token: Optional[str] = Field(
+        default=None,
+        description="Auth token used to track download progress and stream the finished file"
+    )
     url: str
     status: str  # pending, starting_container, installing_plugins, downloading, completed, failed, cancelled
     plugins: List[str] = Field(default_factory=list)
@@ -83,25 +92,6 @@ class JobResponse(BaseModel):
     logs: List[str] = Field(default_factory=list)
 
 
-class PluginInstallRequest(BaseModel):
-    packages: List[str] = Field(
-        ...,
-        description="Python packages or Git URLs to install inside runner container"
-    )
-    container_id: Optional[str] = Field(
-        default=None,
-        description="Optional specific container ID (if omitted, installs into active/primary runner)"
-    )
-
-
-class PluginInstallResponse(BaseModel):
-    success: bool
-    container_id: str
-    packages: List[str]
-    stdout: str
-    stderr: str
-
-
 class ContainerInfoResponse(BaseModel):
     container_id: str
     name: str
@@ -112,3 +102,4 @@ class ContainerInfoResponse(BaseModel):
     remaining_idle_seconds: float
     active_jobs: int
     last_activity: datetime.datetime
+

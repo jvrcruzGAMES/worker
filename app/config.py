@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     WORKER_HOST: str = "0.0.0.0"
     WORKER_PORT: int = 8001
     
+    # Admin key for restricted worker routes (listing jobs, container management)
+    ADMIN_KEY: Optional[str] = os.getenv("ADMIN_KEY", None)
+
     # URL that clients or orchestrator should use to reach this worker
     WORKER_BASE_URL: str = "http://localhost:8001"
     HEALTH_ENDPOINT: str = "/health"

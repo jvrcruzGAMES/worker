@@ -1,6 +1,8 @@
 import asyncio
 import datetime
 import logging
+import secrets
+import time
 import uuid
 from typing import Dict, List, Optional, Tuple
 import httpx
@@ -10,8 +12,6 @@ from app.schemas import (
     FileItemResponse,
     JobCreateRequest,
     JobResponse,
-    PluginInstallRequest,
-    PluginInstallResponse,
 )
 from app.services.docker_manager import RunnerContainerRecord, docker_manager
 
@@ -24,6 +24,42 @@ class JobService:
         self._sync_tasks: Dict[str, asyncio.Task] = {}
         # Maps file_id (hex) or filename -> (filename, container_id)
         self.file_map: Dict[str, Tuple[str, Optional[str]]] = {}
+        # Single-use tokens for job creation: token -> expiry timestamp
+        self.single_use_tokens: Dict[str, float] = {}
+        # Job tracking tokens: job_id -> tracking_token
+        self.job_tracking_tokens: Dict[str, str] = {}
+
+    def generate_single_use_token(self, expires_in: int = 300) -> str:
+        self._cleanup_expired_tokens()
+        token = secrets.token_urlsafe(32)
+        self.single_use_tokens[token] = time.time() + expires_in
+        return token
+
+    def validate_and_consume_single_use_token(self, token: Optional[str]) -> bool:
+        self._cleanup_expired_tokens()
+        if not token:
+            return False
+        expiry = self.single_use_tokens.pop(token, None)
+        if expiry is None:
+            return False
+        return time.time() <= expiry
+
+    def _cleanup_expired_tokens(self):
+        now = time.time()
+        expired = [t for t, exp in self.single_use_tokens.items() if exp < now]
+        for t in expired:
+            self.single_use_tokens.pop(t, None)
+
+    def validate_tracking_token(self, job_id: str, token: Optional[str]) -> bool:
+        if not token or not job_id:
+            return False
+        expected = self.job_tracking_tokens.get(job_id)
+        return expected is not None and secrets.compare_digest(expected, token)
+
+    def invalidate_tracking_token(self, job_id: str):
+        self.job_tracking_tokens.pop(job_id, None)
+        if job_id in self.jobs:
+            self.jobs[job_id].tracking_token = None
 
     def get_active_jobs_count(self) -> int:
         return sum(
@@ -33,10 +69,13 @@ class JobService:
 
     async def create_job(self, request: JobCreateRequest) -> JobResponse:
         job_id = str(uuid.uuid4())
+        tracking_token = secrets.token_urlsafe(32)
+        self.job_tracking_tokens[job_id] = tracking_token
         now = datetime.datetime.now(datetime.timezone.utc)
 
         job = JobResponse(
             job_id=job_id,
+            tracking_token=tracking_token,
             url=request.url,
             status="starting_container",
             plugins=request.plugins or [],
@@ -44,6 +83,7 @@ class JobService:
             logs=[f"Job created at {now.isoformat()}"],
         )
         self.jobs[job_id] = job
+
 
         # Provision or retrieve runner container
         try:
@@ -137,7 +177,7 @@ class JobService:
                                     filename=fname,
                                     size_bytes=rf["size_bytes"],
                                     mime_type=rf.get("mime_type", "application/octet-stream"),
-                                    download_url=f"/api/v1/files/{fid}/download",
+                                    download_url=f"/api/v1/jobs/{job_id}/download?file_id={fid}",
                                     modified_at=datetime.datetime.fromisoformat(
                                         rf["modified_at"]
                                     ) if isinstance(rf["modified_at"], str) else rf["modified_at"],
@@ -150,7 +190,7 @@ class JobService:
                             if not job.filename:
                                 job.filename = file_items[0].filename
                         elif job.filename:
-                            job.download_url = f"/api/v1/files/{job.filename}/download"
+                            job.download_url = f"/api/v1/jobs/{job_id}/download"
 
                         break
 
@@ -191,28 +231,6 @@ class JobService:
     def list_jobs(self) -> List[JobResponse]:
         return list(self.jobs.values())
 
-    async def install_plugins(self, request: PluginInstallRequest) -> PluginInstallResponse:
-        runner = None
-        if request.container_id:
-            runner = docker_manager.get_container(request.container_id)
-        
-        if not runner:
-            runner = await docker_manager.get_or_create_runner()
-
-        runner.touch()
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                f"{runner.base_url}/plugins/install",
-                json={"packages": request.packages, "upgrade": True},
-            )
-            data = resp.json()
-            return PluginInstallResponse(
-                success=data.get("success", False),
-                container_id=runner.container_id,
-                packages=request.packages,
-                stdout=data.get("stdout", ""),
-                stderr=data.get("stderr", ""),
-            )
-
 
 job_service = JobService()
+

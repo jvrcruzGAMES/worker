@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import logging
+import socket
 import time
 import uuid
 from typing import Dict, List, Optional, Tuple
@@ -98,6 +99,22 @@ class DockerManager:
             try:
                 logger.info(f"Spawning child yt-dlp container '{container_name}' from image '{settings.RUNNER_IMAGE}'...")
 
+                # Auto-detect worker container's active Docker network
+                target_network = settings.DOCKER_NETWORK
+                try:
+                    hostname = socket.gethostname()
+                    self_container = client.containers.get(hostname)
+                    self_networks = list(self_container.attrs.get("NetworkSettings", {}).get("Networks", {}).keys())
+                    if self_networks:
+                        if settings.DOCKER_NETWORK in self_networks:
+                            target_network = settings.DOCKER_NETWORK
+                        else:
+                            target_network = self_networks[0]
+                            logger.info(f"Auto-detected worker docker network: '{target_network}'")
+                except Exception as net_err:
+                    logger.debug(f"Could not auto-detect self network (running on host or standalone): {net_err}")
+                    target_network = settings.DOCKER_NETWORK
+
                 # Volume configuration
                 volumes = {
                     settings.SHARED_DOWNLOADS_VOLUME: {"bind": "/app/downloads", "mode": "rw"},
@@ -108,7 +125,7 @@ class DockerManager:
                     image=settings.RUNNER_IMAGE,
                     name=container_name,
                     detach=True,
-                    network=settings.DOCKER_NETWORK,
+                    network=target_network,
                     volumes=volumes,
                     environment={
                         "DOWNLOADS_DIR": "/app/downloads",
@@ -119,9 +136,22 @@ class DockerManager:
                     restart_policy={"Name": "no"},
                 )
 
-                # Wait for container to be assigned IP on network or use container_name on docker network
-                host = container_name
+                # Fetch assigned IP address on network if available
                 port = settings.RUNNER_PORT
+                host = container_name
+                try:
+                    container.reload()
+                    net_map = container.attrs.get("NetworkSettings", {}).get("Networks", {})
+                    if target_network in net_map and net_map[target_network].get("IPAddress"):
+                        host = net_map[target_network]["IPAddress"]
+                    else:
+                        for n_conf in net_map.values():
+                            if n_conf.get("IPAddress"):
+                                host = n_conf["IPAddress"]
+                                break
+                except Exception:
+                    pass
+
                 record = RunnerContainerRecord(
                     container_id=container.id,
                     name=container_name,
@@ -138,22 +168,31 @@ class DockerManager:
                         ready = True
                         break
 
+                if not ready and host != container_name:
+                    # Try falling back to container_name DNS
+                    record.host_or_ip = container_name
+                    record.base_url = f"http://{container_name}:{port}"
+                    for _ in range(10):
+                        await asyncio.sleep(0.5)
+                        if await self._is_container_healthy(record):
+                            ready = True
+                            break
+
                 if not ready:
-                    logger.warning(f"Container {container_name} started but supervisor health check timed out. Proceeding anyway.")
+                    logger.warning(f"Container {container_name} started at {record.base_url} but supervisor health check timed out. Proceeding anyway.")
 
                 logger.info(f"Container {container_name} ({container.id[:12]}) ready at {record.base_url}")
                 return record
 
             except Exception as e:
                 logger.error(f"Error spinning up docker container: {e}", exc_info=True)
-                # Fallback to simulated local record for tests or environments without docker socket
+                # Fallback to simulated local record only if docker client failed or is mocked
                 return self._create_simulated_record(container_name)
         else:
             return self._create_simulated_record(container_name)
 
     def _create_simulated_record(self, name: str) -> RunnerContainerRecord:
         sim_id = f"sim-{uuid.uuid4().hex[:8]}"
-        # If in testing/dev without docker daemon, point to localhost runner port or mock
         record = RunnerContainerRecord(
             container_id=sim_id,
             name=name,
@@ -162,6 +201,7 @@ class DockerManager:
         )
         self._containers[sim_id] = record
         return record
+
 
     async def list_containers(self) -> List[RunnerContainerRecord]:
         return list(self._containers.values())

@@ -51,7 +51,7 @@ services:
       - ORCHESTRATOR_URL=${ORCHESTRATOR_URL:-https://dl.jvrcruz.games}
       - ADMIN_KEY=${ADMIN_KEY:-}
       - DOCKER_NETWORK=mithril-network
-      - FLARESOLVERR_URL=http://flaresolverr:38191/v1
+      - FLARESOLVERR_URL=http://flaresolverr:8191/v1
       - FLARESOLVERR_PROXY=${FLARESOLVERR_PROXY:-}
       - BGUTIL_POT_PROVIDER_URL=http://bgutil-provider:4416
       - INACTIVITY_TIMEOUT_SECONDS=1200

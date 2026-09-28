@@ -214,19 +214,32 @@ class DownloadTaskManager:
                     task.logs.append(f"Stripped worker-reserved arguments: {stripped_args}")
                 if sanitized_args:
                     try:
-                        _, cli_opts, _ = yt_dlp.parse_options(sanitized_args)
-                        cli_dict = vars(cli_opts)
-                        filtered_cli_opts = {
-                            k: v for k, v in cli_dict.items()
-                            if v is not None and k not in ["proxy", "outtmpl", "cookiefile"]
+                        default_cli_opts = yt_dlp.parse_options([])[3]
+                        user_cli_opts = yt_dlp.parse_options(sanitized_args)[3]
+
+                        disallowed_override_keys = {
+                            "proxy", "outtmpl", "cookiefile", "cookiesfrombrowser",
+                            "logger", "progress_hooks", "paths"
                         }
-                        ydl_opts.update(filtered_cli_opts)
+
+                        # Apply only options explicitly modified by user CLI arguments
+                        for k, v in user_cli_opts.items():
+                            if k in disallowed_override_keys:
+                                continue
+                            if default_cli_opts.get(k) != v:
+                                if k == "postprocessors" and v:
+                                    existing_pp = ydl_opts.get("postprocessors", [])
+                                    ydl_opts["postprocessors"] = existing_pp + [
+                                        p for p in v if p not in existing_pp
+                                    ]
+                                else:
+                                    ydl_opts[k] = v
+
+                        task.logs.append(f"Successfully applied custom yt-dlp CLI options: {sanitized_args}")
                     except Exception as parse_err:
                         task.logs.append(f"Warning: Could not parse custom args {sanitized_args}: {parse_err}")
-                for arg in sanitized_args:
-                    task.logs.append(f"Applying sanitized custom arg: {arg}")
 
-            # Ensure no SSL checking is always enforced
+            # Ensure no SSL checking is always enforced (required for mitmproxy)
             ydl_opts["nocheckcertificate"] = True
 
             # Run extraction and download in thread pool

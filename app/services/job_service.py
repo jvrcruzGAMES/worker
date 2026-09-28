@@ -247,7 +247,7 @@ class JobService:
                                     filename=fname,
                                     size_bytes=rf["size_bytes"],
                                     mime_type=rf.get("mime_type", "application/octet-stream"),
-                                    download_url=f"/api/v1/jobs/{job_id}/download?file_id={fid}",
+                                    download_url=f"/api/v1/jobs/{job_id}/files/{fid}/download",
                                     modified_at=datetime.datetime.fromisoformat(
                                         rf["modified_at"]
                                     ) if isinstance(rf["modified_at"], str) else rf["modified_at"],

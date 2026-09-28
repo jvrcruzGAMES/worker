@@ -154,9 +154,12 @@ Mithril uses an end-to-end secure handshake protecting credentials against rever
 | `GET` | `/health` | None | Worker health check, active container counts, and X25519 `public_key` |
 | `GET` | `/info` | None | Worker metadata, version, capabilities, and X25519 `public_key` |
 | `POST` | `/api/v1/jobs` | Orchestrator Single-Use Token | Create a download job with plaintext or envelope-encrypted credentials |
-| `GET` | `/api/v1/jobs/{job_id}` | Tracking Token / Admin | Poll download progress, status, and file metadata |
+| `GET` | `/api/v1/jobs/{job_id}` | Tracking Token / Admin | Poll download progress, status, and table of generated files |
+| `GET` | `/api/v1/jobs/{job_id}/files` | Tracking Token / Admin | List all generated files with their hex file IDs and download URLs |
+| `GET` | `/api/v1/jobs/{job_id}/files/{file_id}` | Tracking Token / Admin | Get metadata for a specific file by its hex file ID |
+| `GET` | `/api/v1/jobs/{job_id}/files/{file_id}/download` | Tracking Token / Admin | Stream specific file by hex ID (invalidates tracking token on finish) |
+| `GET` | `/api/v1/jobs/{job_id}/download` | Tracking Token / Admin | Stream finished primary media file or `?file_id={hex_id}` |
 | `POST` | `/api/v1/jobs/{job_id}/cancel` | Tracking Token / Admin | Cancel an active download |
-| `GET` | `/api/v1/jobs/{job_id}/download` | Tracking Token / Admin | Stream finished download (invalidates tracking token on finish) |
 
 ### Admin Endpoints (Requires `ADMIN_KEY`)
 

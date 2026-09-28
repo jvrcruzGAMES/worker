@@ -435,3 +435,113 @@ def test_worker_http_proxy_setting(monkeypatch):
     custom_settings = Settings()
     assert custom_settings.HTTP_PROXY == "http://proxy.test.internal:8080"
     assert custom_settings.FLARESOLVERR_PROXY == "http://proxy.test.internal:8080"
+
+
+@pytest.mark.asyncio
+async def test_job_file_list_and_hex_id_download_endpoints(monkeypatch):
+    now = datetime.datetime.now(datetime.timezone.utc)
+    hex_id_video = "a1b2c3d4e5f60718"
+    hex_id_thumb = "f8e7d6c5b4a39201"
+
+    file_items = [
+        FileItemResponse(
+            file_id=hex_id_video,
+            filename="Test Video [123].mp4",
+            size_bytes=1048576,
+            mime_type="video/mp4",
+            download_url=f"/api/v1/jobs/files-test-job-789/files/{hex_id_video}/download",
+            modified_at=now,
+        ),
+        FileItemResponse(
+            file_id=hex_id_thumb,
+            filename="Test Video [123].webp",
+            size_bytes=20480,
+            mime_type="image/webp",
+            download_url=f"/api/v1/jobs/files-test-job-789/files/{hex_id_thumb}/download",
+            modified_at=now,
+        ),
+    ]
+
+    job = JobResponse(
+        job_id="files-test-job-789",
+        tracking_token="files-tracking-token-789",
+        url="https://youtube.com/watch?v=sample-files",
+        status="completed",
+        filename="Test Video [123].mp4",
+        download_url=f"/api/v1/jobs/files-test-job-789/files/{hex_id_video}/download",
+        files=file_items,
+        container_id="mock-runner-files",
+        created_at=now,
+        completed_at=now,
+    )
+    job_service.jobs[job.job_id] = job
+    job_service.job_tracking_tokens[job.job_id] = job.tracking_token
+
+    runner_rec = RunnerContainerRecord(
+        container_id="mock-runner-files",
+        name="mock-runner",
+        host_or_ip="localhost",
+        port=8080,
+    )
+    docker_manager._containers["mock-runner-files"] = runner_rec
+
+    orig_send = httpx.AsyncClient.send
+
+    async def mock_send(self_client, request, **kwargs):
+        if "localhost:8080/files/" in str(request.url) and hex_id_video in str(request.url):
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "video/mp4", "Content-Disposition": 'attachment; filename="Test Video [123].mp4"'},
+                stream=httpx.ByteStream(b"video bytes"),
+                request=request,
+            )
+        elif "localhost:8080/files/" in str(request.url) and hex_id_thumb in str(request.url):
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "image/webp", "Content-Disposition": 'attachment; filename="Test Video [123].webp"'},
+                stream=httpx.ByteStream(b"thumbnail bytes"),
+                request=request,
+            )
+        return await orig_send(self_client, request, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", mock_send)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # 1. List files for job -> 200
+        files_resp = await client.get(
+            f"/api/v1/jobs/{job.job_id}/files",
+            headers={"Authorization": f"Bearer {job.tracking_token}"}
+        )
+        assert files_resp.status_code == 200
+        files_data = files_resp.json()
+        assert len(files_data) == 2
+        assert files_data[0]["file_id"] == hex_id_video
+        assert files_data[0]["download_url"] == f"/api/v1/jobs/{job.job_id}/files/{hex_id_video}/download"
+        assert files_data[1]["file_id"] == hex_id_thumb
+        assert files_data[1]["download_url"] == f"/api/v1/jobs/{job.job_id}/files/{hex_id_thumb}/download"
+
+        # 2. Get specific file info by hex ID -> 200
+        file_info_resp = await client.get(
+            f"/api/v1/jobs/{job.job_id}/files/{hex_id_thumb}",
+            headers={"Authorization": f"Bearer {job.tracking_token}"}
+        )
+        assert file_info_resp.status_code == 200
+        finfo = file_info_resp.json()
+        assert finfo["file_id"] == hex_id_thumb
+        assert finfo["filename"] == "Test Video [123].webp"
+
+        # 3. Download specific file by hex ID route -> 200
+        dl_thumb_resp = await client.get(
+            f"/api/v1/jobs/{job.job_id}/files/{hex_id_thumb}/download",
+            headers={"Authorization": f"Bearer {job.tracking_token}"}
+        )
+        assert dl_thumb_resp.status_code == 200
+        assert dl_thumb_resp.text == "thumbnail bytes"
+
+        # Subsequent download with same tracking token -> 401 Unauthorized
+        subsequent_dl = await client.get(
+            f"/api/v1/jobs/{job.job_id}/files/{hex_id_thumb}/download",
+            headers={"Authorization": f"Bearer {job.tracking_token}"}
+        )
+        assert subsequent_dl.status_code == 401
+        assert job_service.job_tracking_tokens.get(job.job_id) is None

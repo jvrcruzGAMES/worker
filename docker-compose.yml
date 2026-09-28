@@ -16,7 +16,7 @@ services:
     container_name: mithril-worker-flaresolverr
     restart: unless-stopped
     ports:
-      - "8191:8191"
+      - "38191:8191"
     environment:
       - LOG_LEVEL=info
       - LOG_HTML=false
@@ -52,7 +52,7 @@ services:
       - ADMIN_KEY=${ADMIN_KEY:-}
       - DOCKER_NETWORK=mithril-network
       - RUNNER_IMAGE=mithril-yt-dlp-runner:latest
-      - FLARESOLVERR_URL=http://flaresolverr:8191/v1
+      - FLARESOLVERR_URL=http://flaresolverr:38191/v1
       - FLARESOLVERR_PROXY=${FLARESOLVERR_PROXY:-}
       - BGUTIL_POT_PROVIDER_URL=http://bgutil-provider:4416
       - INACTIVITY_TIMEOUT_SECONDS=1200

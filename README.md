@@ -14,10 +14,12 @@ To run a Mithril Worker, the following services and permissions are required:
 - **Docker Engine & Docker Compose**: Installed and running on the host system.
 - **Docker Socket Access** (`/var/run/docker.sock`): The worker requires access to the Docker daemon to dynamically spawn, monitor, and clean up isolated child runner containers.
 - **Network Access**: The worker must be reachable externally via HTTPS (e.g. via Nginx, Caddy, or Cloudflare Tunnel) and have outbound access to communicate with the Mithril Orchestrator (`https://dl.jvrcruz.games/`).
+- **Container Images (Prebuilt on GitHub Container Registry)**:
+  - **`ghcr.io/jvrcruzgames/worker:latest`**: Official, signed prebuilt worker image.
+  - **`ghcr.io/jvrcruzgames/yt-dlp-runner:latest`**: Official prebuilt runner image for dynamic yt-dlp child containers.
 - **Required Sidecar Services (in same network)**:
   - **`bgutil-provider`** (`brainicism/bgutil-ytdlp-pot-provider:latest` on port `4416`): Generates Proof-of-Origin (PO) tokens to bypass YouTube's "Sign in to confirm you're not a bot" detection.
   - **`flaresolverr`** (`flaresolverr/flaresolverr:latest` on port `8191`): Solves Cloudflare and anti-bot challenges for protected media sources.
-  - **`yt-dlp-runner-base`** (`mithril-yt-dlp-runner:latest`): Pre-built base image for dynamic yt-dlp child containers.
 
 ---
 
@@ -41,8 +43,8 @@ ADMIN_KEY=your-secure-admin-secret-key
 FLARESOLVERR_URL=http://flaresolverr:8191/v1
 BGUTIL_POT_PROVIDER_URL=http://bgutil-provider:4416
 
-# Docker and Runner Container Configuration
-RUNNER_IMAGE=mithril-yt-dlp-runner:latest
+# Docker and Runner Container Configuration (Using official prebuilt GHCR runner image)
+RUNNER_IMAGE=ghcr.io/jvrcruzgames/yt-dlp-runner:latest
 DOCKER_NETWORK=mithril-network
 SHARED_DOWNLOADS_VOLUME=mithril-downloads
 SHARED_COOKIES_VOLUME=mithril-cookies
@@ -63,6 +65,8 @@ INTEGRITY_CHECK_ENABLED=true
 
 ### 3. Docker Compose Example
 
+Deploy the worker using official prebuilt images from GitHub Container Registry:
+
 ```yaml
 version: "3.8"
 
@@ -74,7 +78,7 @@ services:
     restart: unless-stopped
     init: true
     ports:
-      - "4416:4416"
+      - "34416:4416"
     networks:
       - mithril-net
 
@@ -84,7 +88,7 @@ services:
     container_name: mithril-worker-flaresolverr
     restart: unless-stopped
     ports:
-      - "8191:8191"
+      - "38191:8191"
     environment:
       - LOG_LEVEL=info
       - LOG_HTML=false
@@ -93,19 +97,9 @@ services:
     networks:
       - mithril-net
 
-  # Pre-build runner image so worker can spin up child container instances dynamically
-  yt-dlp-runner-base:
-    build:
-      context: ./yt-dlp-runner
-      dockerfile: Dockerfile
-    image: mithril-yt-dlp-runner:latest
-    restart: "no"
-    entrypoint: ["echo", "yt-dlp runner base image built successfully."]
-
+  # Official Prebuilt Mithril Worker
   worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/jvrcruzgames/worker:latest
     container_name: mithril-worker
     restart: unless-stopped
     ports:
@@ -115,9 +109,9 @@ services:
       - WORKER_BASE_URL=https://worker.yourdomain.com
       - ADMIN_KEY=your-secure-admin-secret-key
       - DOCKER_NETWORK=mithril-network
-      - RUNNER_IMAGE=mithril-yt-dlp-runner:latest
-      - FLARESOLVERR_URL=http://flaresolverr:8191/v1
-      - BGUTIL_POT_PROVIDER_URL=http://bgutil-provider:4416
+      - RUNNER_IMAGE=ghcr.io/jvrcruzgames/yt-dlp-runner:latest
+      - FLARESOLVERR_URL=http://flaresolverr:38191/v1
+      - BGUTIL_POT_PROVIDER_URL=http://bgutil-provider:34416
       - SHARED_DOWNLOADS_VOLUME=mithril-downloads
       - SHARED_COOKIES_VOLUME=mithril-cookies
       - INACTIVITY_TIMEOUT_SECONDS=1200
@@ -129,7 +123,6 @@ services:
     depends_on:
       - flaresolverr
       - bgutil-provider
-      - yt-dlp-runner-base
     networks:
       - mithril-net
 
@@ -145,9 +138,13 @@ networks:
     driver: bridge
 ```
 
-Run the worker and all dependencies:
+Pull the prebuilt runner image and start the worker stack:
 ```bash
-docker compose up -d --build
+# 1. Pull the prebuilt yt-dlp child runner image
+docker pull ghcr.io/jvrcruzgames/yt-dlp-runner:latest
+
+# 2. Launch the worker and sidecar stack
+docker compose up -d
 ```
 
 ---

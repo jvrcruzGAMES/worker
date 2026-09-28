@@ -118,5 +118,6 @@ class ContainerInfoResponse(BaseModel):
     is_draining: bool = False
     can_accept_jobs: bool = True
     active_jobs: int
+    active_downloads: int = 0
     last_activity: datetime.datetime
 

@@ -651,9 +651,35 @@ async def test_inactivity_reaper_rules():
     c_expired.active_jobs_count = 0
     docker_manager._containers["c-expired"] = c_expired
 
+    # Case D: Active file download in progress -> Do NOT reap even if older than 20 mins or retention expired
+    c_downloading = RunnerContainerRecord("c-downloading", "c-downloading", "localhost", 8080)
+    c_downloading.created_at = now - 1500  # 25 mins old
+    c_downloading.last_job_completed_at = now - 400  # retention expired
+    c_downloading.active_jobs_count = 0
+    c_downloading.active_downloads_count = 1  # active file download!
+    docker_manager._containers["c-downloading"] = c_downloading
+
     # Run reaper check
     await inactivity_reaper._check_and_reap_containers()
 
     assert "c-busy" in docker_manager._containers
+    assert "c-downloading" in docker_manager._containers
     assert "c-retention" not in docker_manager._containers
     assert "c-expired" not in docker_manager._containers
+
+
+@pytest.mark.asyncio
+async def test_active_download_prevents_container_deletion():
+    c = RunnerContainerRecord("c-active-dl", "c-active-dl", "localhost", 8080)
+    c.active_downloads_count = 2
+    docker_manager._containers["c-active-dl"] = c
+
+    # 1. Normal stop_and_remove_container should defer / return False when downloads active
+    res = await docker_manager.stop_and_remove_container("c-active-dl", force=False)
+    assert res is False
+    assert "c-active-dl" in docker_manager._containers
+
+    # 2. Force stop_and_remove_container (e.g. admin DELETE endpoint) succeeds
+    res_forced = await docker_manager.stop_and_remove_container("c-active-dl", force=True)
+    assert res_forced is True
+    assert "c-active-dl" not in docker_manager._containers

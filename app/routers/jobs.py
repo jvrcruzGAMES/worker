@@ -506,6 +506,7 @@ async def list_containers():
                 is_draining=c.is_draining,
                 can_accept_jobs=c.can_accept_jobs,
                 active_jobs=c.active_jobs_count,
+                active_downloads=c.active_downloads_count,
                 last_activity=datetime.datetime.fromtimestamp(
                     c.last_activity, tz=datetime.timezone.utc
                 ),
@@ -520,7 +521,7 @@ async def list_containers():
     summary="Manually stop and remove runner container (Admin Key Required)"
 )
 async def remove_container(container_id: str):
-    removed = await docker_manager.stop_and_remove_container(container_id)
+    removed = await docker_manager.stop_and_remove_container(container_id, force=True)
     if not removed:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -532,6 +533,50 @@ async def remove_container(container_id: str):
 # ============================================================================
 # Internal File Streaming Helpers
 # ============================================================================
+
+def _build_streaming_response(
+    target_runner,
+    client: httpx.AsyncClient,
+    upstream_resp: httpx.Response,
+    identifier: str,
+    filename: Optional[str],
+    container_id: Optional[str],
+    job_id: Optional[str],
+) -> StreamingResponse:
+    target_runner.active_downloads_count += 1
+    target_runner.touch()
+
+    headers = dict(upstream_resp.headers)
+    if filename and "content-disposition" not in [k.lower() for k in headers]:
+        headers["content-disposition"] = f'attachment; filename="{filename}"'
+
+    async def file_generator():
+        try:
+            async for chunk in upstream_resp.aiter_raw():
+                target_runner.touch()
+                yield chunk
+        finally:
+            target_runner.active_downloads_count = max(0, target_runner.active_downloads_count - 1)
+            target_runner.touch()
+
+    async def cleanup():
+        await client.aclose()
+        if job_id:
+            all_downloaded = job_service.record_file_download(job_id, identifier)
+            target_cid = container_id or target_runner.container_id
+            if all_downloaded and target_cid:
+                if job_service.are_all_container_jobs_downloaded(target_cid):
+                    runner = docker_manager.get_container(target_cid)
+                    if runner and runner.active_jobs_count == 0 and runner.active_downloads_count == 0:
+                        await docker_manager.stop_and_remove_container(target_cid)
+
+    return StreamingResponse(
+        file_generator(),
+        status_code=200,
+        headers=headers,
+        background=BackgroundTask(cleanup),
+    )
+
 
 async def _stream_file_response(
     identifier: str,
@@ -549,25 +594,14 @@ async def _stream_file_response(
             try:
                 r = await client.send(req, stream=True)
                 if r.status_code == 200:
-                    headers = dict(r.headers)
-                    if filename and "content-disposition" not in [k.lower() for k in headers]:
-                        headers["content-disposition"] = f'attachment; filename="{filename}"'
-
-                    async def cleanup():
-                        await client.aclose()
-                        if job_id:
-                            all_downloaded = job_service.record_file_download(job_id, identifier)
-                            if all_downloaded and container_id:
-                                if job_service.are_all_container_jobs_downloaded(container_id):
-                                    runner = docker_manager.get_container(container_id)
-                                    if runner and runner.active_jobs_count == 0:
-                                        await docker_manager.stop_and_remove_container(container_id)
-
-                    return StreamingResponse(
-                        r.aiter_raw(),
-                        status_code=200,
-                        headers=headers,
-                        background=BackgroundTask(cleanup),
+                    return _build_streaming_response(
+                        target_runner=runner,
+                        client=client,
+                        upstream_resp=r,
+                        identifier=identifier,
+                        filename=filename,
+                        container_id=container_id,
+                        job_id=job_id,
                     )
             except Exception as e:
                 logger.warning(f"Failed to stream from runner container {container_id}: {e}")
@@ -582,26 +616,14 @@ async def _stream_file_response(
             req = client.build_request("GET", f"{c.base_url}/files/{identifier}/download")
             r = await client.send(req, stream=True)
             if r.status_code == 200:
-                headers = dict(r.headers)
-                if filename and "content-disposition" not in [k.lower() for k in headers]:
-                    headers["content-disposition"] = f'attachment; filename="{filename}"'
-
-                async def cleanup():
-                    await client.aclose()
-                    if job_id:
-                        all_downloaded = job_service.record_file_download(job_id, identifier)
-                        target_cid = container_id or c.container_id
-                        if all_downloaded and target_cid:
-                            if job_service.are_all_container_jobs_downloaded(target_cid):
-                                runner = docker_manager.get_container(target_cid)
-                                if runner and runner.active_jobs_count == 0:
-                                    await docker_manager.stop_and_remove_container(target_cid)
-
-                return StreamingResponse(
-                    r.aiter_raw(),
-                    status_code=200,
-                    headers=headers,
-                    background=BackgroundTask(cleanup),
+                return _build_streaming_response(
+                    target_runner=c,
+                    client=client,
+                    upstream_resp=r,
+                    identifier=identifier,
+                    filename=filename,
+                    container_id=c.container_id,
+                    job_id=job_id,
                 )
             await client.aclose()
         except Exception:

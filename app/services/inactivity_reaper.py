@@ -46,8 +46,8 @@ class InactivityReaperService:
         containers = await docker_manager.list_containers()
         now = time.time()
         for runner in containers:
-            # 1. If local active jobs count > 0, container is actively working
-            if runner.active_jobs_count > 0:
+            # 1. If active jobs count > 0 or client is actively downloading a file, container must stay alive
+            if runner.active_jobs_count > 0 or runner.active_downloads_count > 0:
                 runner.touch()
                 continue
 
@@ -66,8 +66,12 @@ class InactivityReaperService:
             except Exception:
                 pass
 
-            # 3. Check if all completed files for this container have been downloaded
-            if runner.last_job_completed_at is not None and job_service.are_all_container_jobs_downloaded(runner.container_id):
+            # 3. Check if all completed files for this container have been downloaded (and no downloads in flight)
+            if (
+                runner.last_job_completed_at is not None
+                and runner.active_downloads_count == 0
+                and job_service.are_all_container_jobs_downloaded(runner.container_id)
+            ):
                 logger.info(
                     f"Runner container '{runner.name}' ({runner.container_id[:12]}) has all files downloaded. "
                     f"Reaping container immediately..."

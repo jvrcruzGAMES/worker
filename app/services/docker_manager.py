@@ -31,6 +31,7 @@ class RunnerContainerRecord:
         self.base_url = f"http://{host_or_ip}:{port}"
         self.last_activity: float = time.time()
         self.active_jobs_count: int = 0
+        self.active_downloads_count: int = 0
         self.created_at: float = time.time()
         self.last_job_completed_at: Optional[float] = None
         self.is_draining: bool = False
@@ -57,7 +58,7 @@ class RunnerContainerRecord:
 
     @property
     def idle_seconds(self) -> float:
-        if self.active_jobs_count > 0:
+        if self.active_jobs_count > 0 or self.active_downloads_count > 0:
             return 0.0
         return round(time.time() - self.last_activity, 2)
 
@@ -335,9 +336,21 @@ class DockerManager:
     def get_container(self, container_id: str) -> Optional[RunnerContainerRecord]:
         return self._containers.get(container_id)
 
-    async def stop_and_remove_container(self, container_id: str) -> bool:
+    async def stop_and_remove_container(self, container_id: str, force: bool = False) -> bool:
         async with self._lock:
-            record = self._containers.pop(container_id, None)
+            record = self._containers.get(container_id)
+            if not record:
+                return False
+
+            # Do not delete if client is actively downloading a file (unless force=True)
+            if not force and record.active_downloads_count > 0:
+                logger.info(
+                    f"Deferred removal of container {record.name} ({container_id[:12]}): "
+                    f"{record.active_downloads_count} active file download(s) in progress."
+                )
+                return False
+
+            self._containers.pop(container_id, None)
             client = self._get_docker_client()
 
             # Clean up all tracking tokens associated with jobs on this container

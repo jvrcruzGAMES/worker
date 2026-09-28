@@ -187,13 +187,13 @@ class DownloadTaskManager:
                 def error(self, msg):
                     task.logs.append(f"[ERROR] {msg}")
 
-            # 4. Prepare yt-dlp options
+            # 4. Prepare yt-dlp options (nocheckcertificate=True is required for mitmproxy)
             ydl_opts: Dict[str, Any] = {
                 "outtmpl": outtmpl,
                 "progress_hooks": [ydl_progress_hook],
                 "logger": CustomYDLLogger(),
                 "noplaylist": True,
-                "nocheckcertificate": False,
+                "nocheckcertificate": True,
             }
 
             # Route through FlareSolverr mitmproxy if active
@@ -212,8 +212,22 @@ class DownloadTaskManager:
                 sanitized_args, stripped_args = sanitize_yt_dlp_args(request.custom_args)
                 if stripped_args:
                     task.logs.append(f"Stripped worker-reserved arguments: {stripped_args}")
+                if sanitized_args:
+                    try:
+                        _, cli_opts, _ = yt_dlp.parse_options(sanitized_args)
+                        cli_dict = vars(cli_opts)
+                        filtered_cli_opts = {
+                            k: v for k, v in cli_dict.items()
+                            if v is not None and k not in ["proxy", "outtmpl", "cookiefile"]
+                        }
+                        ydl_opts.update(filtered_cli_opts)
+                    except Exception as parse_err:
+                        task.logs.append(f"Warning: Could not parse custom args {sanitized_args}: {parse_err}")
                 for arg in sanitized_args:
                     task.logs.append(f"Applying sanitized custom arg: {arg}")
+
+            # Ensure no SSL checking is always enforced
+            ydl_opts["nocheckcertificate"] = True
 
             # Run extraction and download in thread pool
             loop = asyncio.get_running_loop()

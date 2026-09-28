@@ -5,9 +5,10 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Install curl for docker healthcheck and docker CLI utilities
+# Install curl for docker healthcheck, git, and ca-certificates
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    git \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -18,6 +19,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+
+ARG GIT_COMMIT_SHA
+ARG RUNNER_GIT_COMMIT_SHA
+ENV GIT_COMMIT_SHA=${GIT_COMMIT_SHA} \
+    RUNNER_GIT_COMMIT_SHA=${RUNNER_GIT_COMMIT_SHA}
 
 EXPOSE 8001
 

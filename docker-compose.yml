@@ -27,6 +27,8 @@ services:
       - DOCKER_NETWORK=mithril-network
       - INACTIVITY_TIMEOUT_SECONDS=1200
       - AUTO_ANNOUNCE=true
+      - GIT_COMMIT_SHA=${GIT_COMMIT_SHA:-}
+      - RUNNER_GIT_COMMIT_SHA=${RUNNER_GIT_COMMIT_SHA:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:

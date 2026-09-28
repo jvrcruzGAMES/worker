@@ -45,8 +45,6 @@ BGUTIL_POT_PROVIDER_URL=http://bgutil-provider:4416
 
 # Docker Configuration (Worker automatically uses the official hardcoded runner image: ghcr.io/jvrcruzgames/yt-dlp-runner:latest)
 DOCKER_NETWORK=mithril-network
-SHARED_DOWNLOADS_VOLUME=mithril-downloads
-SHARED_COOKIES_VOLUME=mithril-cookies
 
 # Inactivity Timeout for child containers (20 minutes default)
 INACTIVITY_TIMEOUT_SECONDS=1200
@@ -108,27 +106,17 @@ services:
       - WORKER_BASE_URL=https://worker.yourdomain.com
       - ADMIN_KEY=your-secure-admin-secret-key
       - DOCKER_NETWORK=mithril-network
-      - FLARESOLVERR_URL=http://flaresolverr:38191/v1
-      - BGUTIL_POT_PROVIDER_URL=http://bgutil-provider:34416
-      - SHARED_DOWNLOADS_VOLUME=mithril-downloads
-      - SHARED_COOKIES_VOLUME=mithril-cookies
+      - FLARESOLVERR_URL=http://flaresolverr:8191/v1
+      - BGUTIL_POT_PROVIDER_URL=http://bgutil-provider:4416
       - INACTIVITY_TIMEOUT_SECONDS=1200
       - AUTO_ANNOUNCE=true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - mithril-downloads:/app/downloads
-      - mithril-cookies:/app/cookies
     depends_on:
       - flaresolverr
       - bgutil-provider
     networks:
       - mithril-net
-
-volumes:
-  mithril-downloads:
-    name: mithril-downloads
-  mithril-cookies:
-    name: mithril-cookies
 
 networks:
   mithril-net:

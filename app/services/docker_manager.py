@@ -171,18 +171,11 @@ class DockerManager:
                 worker_networks = self._get_worker_networks(client)
                 primary_network = worker_networks[0]
 
-                # Volume configuration
-                volumes = {
-                    settings.SHARED_DOWNLOADS_VOLUME: {"bind": "/app/downloads", "mode": "rw"},
-                    settings.SHARED_COOKIES_VOLUME: {"bind": "/app/cookies", "mode": "rw"},
-                }
-
                 container = client.containers.run(
                     image=runner_image,
                     name=container_name,
                     detach=True,
                     network=primary_network,
-                    volumes=volumes,
                     labels={
                         "app": "mithril-yt-dlp-runner",
                         "managed_by": "mithril-worker",

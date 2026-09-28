@@ -60,14 +60,6 @@ class Settings(BaseSettings):
     INACTIVITY_TIMEOUT_SECONDS: int = 1200
     INACTIVITY_CHECK_INTERVAL_SECONDS: int = 30
     
-    # Volumes or host directories for shared downloads and isolated cookies
-    SHARED_DOWNLOADS_VOLUME: str = "mithril-downloads"
-    SHARED_COOKIES_VOLUME: str = "mithril-cookies"
-    LOCAL_DOWNLOADS_PATH: str = os.getenv(
-        "LOCAL_DOWNLOADS_PATH",
-        "/app/downloads" if os.path.exists("/app/downloads") else "./downloads"
-    )
-    
     # Worker tags and capabilities
     WORKER_TAGS: List[str] = Field(default_factory=lambda: ["yt-dlp", "media", "downloader"])
     WORKER_METADATA_JSON: str = json.dumps({

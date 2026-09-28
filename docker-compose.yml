@@ -58,20 +58,12 @@ services:
       - AUTO_ANNOUNCE=true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - mithril-downloads:/app/downloads
-      - mithril-cookies:/app/cookies
     depends_on:
       - flaresolverr
       - bgutil-provider
       - yt-dlp-runner
     networks:
       - mithril-net
-
-volumes:
-  mithril-downloads:
-    name: mithril-downloads
-  mithril-cookies:
-    name: mithril-cookies
 
 networks:
   mithril-net:

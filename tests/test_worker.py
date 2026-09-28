@@ -1,5 +1,6 @@
 import datetime
 from pathlib import Path
+import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 from app.config import settings
@@ -122,37 +123,49 @@ async def test_single_use_token_and_job_tracking_flow(monkeypatch):
         assert job_auth.status_code == 200
         assert job_auth.json()["job_id"] == job_id
 
-        # 7. Test file download & tracking token invalidation
-        # Put sample file in local downloads
-        downloads_dir = Path(settings.LOCAL_DOWNLOADS_PATH)
-        downloads_dir.mkdir(parents=True, exist_ok=True)
-        sample_file = downloads_dir / "sample_video.mp4"
-        sample_file.write_bytes(b"sample video bytes")
-
-        # Manually set job status to completed for download test
+        # 7. Test file download & tracking token invalidation via HTTP stream
         job = job_service.get_job(job_id)
         job.status = "completed"
         job.filename = "sample_video.mp4"
+        job.container_id = "mock-runner-cid"
 
-        try:
-            # Download with tracking token
-            dl_resp = await client.get(
-                f"/api/v1/jobs/{job_id}/download",
-                headers={"Authorization": f"Bearer {tracking_token}"}
-            )
-            assert dl_resp.status_code == 200
-            assert dl_resp.content == b"sample video bytes"
+        runner_rec = RunnerContainerRecord(
+            container_id="mock-runner-cid",
+            name="mock-runner",
+            host_or_ip="localhost",
+            port=8080,
+        )
+        docker_manager._containers["mock-runner-cid"] = runner_rec
 
-            # After download finish, tracking token must be invalidated
-            assert job_service.job_tracking_tokens.get(job_id) is None
-            subsequent_dl = await client.get(
-                f"/api/v1/jobs/{job_id}/download",
-                headers={"Authorization": f"Bearer {tracking_token}"}
-            )
-            assert subsequent_dl.status_code == 401
-        finally:
-            if sample_file.exists():
-                sample_file.unlink()
+        orig_send = httpx.AsyncClient.send
+
+        async def mock_send(self_client, request, **kwargs):
+            if "/files/" in str(request.url):
+                return httpx.Response(
+                    200,
+                    headers={"Content-Type": "video/mp4", "Content-Disposition": 'attachment; filename="sample_video.mp4"'},
+                    stream=httpx.ByteStream(b"sample video bytes"),
+                    request=request,
+                )
+            return await orig_send(self_client, request, **kwargs)
+
+        monkeypatch.setattr(httpx.AsyncClient, "send", mock_send)
+
+        # Download with tracking token
+        dl_resp = await client.get(
+            f"/api/v1/jobs/{job_id}/download",
+            headers={"Authorization": f"Bearer {tracking_token}"}
+        )
+        assert dl_resp.status_code == 200
+        assert dl_resp.content == b"sample video bytes"
+
+        # After download finish, tracking token must be invalidated
+        assert job_service.job_tracking_tokens.get(job_id) is None
+        subsequent_dl = await client.get(
+            f"/api/v1/jobs/{job_id}/download",
+            headers={"Authorization": f"Bearer {tracking_token}"}
+        )
+        assert subsequent_dl.status_code == 401
 
 
 def test_worker_integrity_proof():

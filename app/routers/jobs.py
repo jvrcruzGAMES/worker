@@ -350,47 +350,36 @@ async def _stream_file_response(
     container_id: Optional[str] = None,
     job_id: Optional[str] = None,
 ):
-    # 1. Local path check
-    downloads_path = Path(settings.LOCAL_DOWNLOADS_PATH)
-    if filename:
-        local_file = downloads_path / filename
-        if local_file.is_file() and local_file.exists():
-            resp = FileResponse(
-                path=str(local_file),
-                filename=filename,
-                media_type="application/octet-stream",
-            )
-            if job_id:
-                resp.background = BackgroundTask(job_service.invalidate_tracking_token, job_id)
-            return resp
-
-    # 2. Direct container lookup if known
+    # 1. Direct container lookup if known
     if container_id:
         runner = docker_manager.get_container(container_id)
         if runner:
             runner.touch()
             client = httpx.AsyncClient(timeout=None)
             req = client.build_request("GET", f"{runner.base_url}/files/{identifier}/download")
-            r = await client.send(req, stream=True)
-            if r.status_code == 200:
-                headers = dict(r.headers)
-                if filename and "content-disposition" not in [k.lower() for k in headers]:
-                    headers["content-disposition"] = f'attachment; filename="{filename}"'
+            try:
+                r = await client.send(req, stream=True)
+                if r.status_code == 200:
+                    headers = dict(r.headers)
+                    if filename and "content-disposition" not in [k.lower() for k in headers]:
+                        headers["content-disposition"] = f'attachment; filename="{filename}"'
 
-                async def cleanup():
-                    await client.aclose()
-                    if job_id:
-                        job_service.invalidate_tracking_token(job_id)
+                    async def cleanup():
+                        await client.aclose()
+                        if job_id:
+                            job_service.invalidate_tracking_token(job_id)
 
-                return StreamingResponse(
-                    r.aiter_raw(),
-                    status_code=200,
-                    headers=headers,
-                    background=cleanup,
-                )
+                    return StreamingResponse(
+                        r.aiter_raw(),
+                        status_code=200,
+                        headers=headers,
+                        background=cleanup,
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to stream from runner container {container_id}: {e}")
             await client.aclose()
 
-    # 3. Fallback: Search all active runner containers
+    # 2. Fallback: Search all active runner containers
     containers = await docker_manager.list_containers()
     for c in containers:
         try:
@@ -420,6 +409,6 @@ async def _stream_file_response(
 
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"File '{identifier}' could not be located."
+        detail=f"File '{identifier}' could not be located on any active runner container."
     )
 

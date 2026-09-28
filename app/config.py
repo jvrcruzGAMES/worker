@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     FLARESOLVERR_URL: str = "http://flaresolverr:8191/v1"
     FLARESOLVERR_PROXY: Optional[str] = None
     
+    # bgutil YouTube POT token provider configuration
+    BGUTIL_POT_PROVIDER_URL: Optional[str] = os.getenv(
+        "BGUTIL_POT_PROVIDER_URL",
+        os.getenv("POT_PROVIDER_URL", None)
+    )
+    
     # Inactivity timeout for child containers: 20 minutes = 1200 seconds
     INACTIVITY_TIMEOUT_SECONDS: int = 1200
     INACTIVITY_CHECK_INTERVAL_SECONDS: int = 30

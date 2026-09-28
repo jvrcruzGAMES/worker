@@ -143,6 +143,8 @@ class DockerManager:
                         "COOKIES_DIR": "/app/cookies",
                         "FLARESOLVERR_URL": settings.FLARESOLVERR_URL,
                         "FLARESOLVERR_PROXY": settings.FLARESOLVERR_PROXY or "",
+                        "BGUTIL_POT_PROVIDER_URL": settings.BGUTIL_POT_PROVIDER_URL or "",
+                        "POT_PROVIDER_URL": settings.BGUTIL_POT_PROVIDER_URL or "",
                     },
                     restart_policy={"Name": "no"},
                 )

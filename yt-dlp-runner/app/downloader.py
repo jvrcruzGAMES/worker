@@ -196,8 +196,21 @@ class DownloadTaskManager:
                 "nocheckcertificate": True,
             }
 
-            # Route through FlareSolverr mitmproxy if active
-            if flaresolverr_proxy.is_active or settings.USE_FLARESOLVERR_PROXY:
+            # Configure bgutil YouTube POT token provider if specified
+            pot_url = getattr(settings, "BGUTIL_POT_PROVIDER_URL", None) or os.getenv("BGUTIL_POT_PROVIDER_URL") or os.getenv("POT_PROVIDER_URL")
+            if pot_url:
+                extractor_args = ydl_opts.setdefault("extractor_args", {})
+                for ext_name in ["youtubepot-bgutilhttp", "youtubepot-bgutil", "youtubepot"]:
+                    ext_dict = extractor_args.setdefault(ext_name, {})
+                    if "base_url" not in ext_dict:
+                        ext_dict["base_url"] = [pot_url]
+                yt_dict = extractor_args.setdefault("youtube", {})
+                if "getpot_bgutil_baseurl" not in yt_dict:
+                    yt_dict["getpot_bgutil_baseurl"] = [pot_url]
+                task.logs.append(f"Configured bgutil POT provider base_url: {pot_url}")
+
+            # Route through FlareSolverr mitmproxy ONLY if actively running
+            if flaresolverr_proxy.is_active:
                 ydl_opts["proxy"] = flaresolverr_proxy.proxy_url
                 task.logs.append(f"Routing through FlareSolverr mitmproxy at: {flaresolverr_proxy.proxy_url}")
 
@@ -232,6 +245,11 @@ class DownloadTaskManager:
                                     ydl_opts["postprocessors"] = existing_pp + [
                                         p for p in v if p not in existing_pp
                                     ]
+                                elif k == "extractor_args" and v:
+                                    # Merge user extractor_args
+                                    curr_ea = ydl_opts.setdefault("extractor_args", {})
+                                    for ext_k, ext_v in v.items():
+                                        curr_ea.setdefault(ext_k, {}).update(ext_v)
                                 else:
                                     ydl_opts[k] = v
 
@@ -257,38 +275,59 @@ class DownloadTaskManager:
 
             # 5. Detect all generated files for this task
             discovered_files: List[FileInfo] = []
+            candidate_paths: List[Path] = []
+
+            if actual_filepath:
+                candidate_paths.append(Path(actual_filepath))
+            if info_dict:
+                if "_filename" in info_dict:
+                    candidate_paths.append(Path(info_dict["_filename"]))
+                if "filepath" in info_dict:
+                    candidate_paths.append(Path(info_dict["filepath"]))
+                for req_dl in info_dict.get("requested_downloads", []):
+                    if "filepath" in req_dl:
+                        candidate_paths.append(Path(req_dl["filepath"]))
+                    if "_filename" in req_dl:
+                        candidate_paths.append(Path(req_dl["_filename"]))
+
+            # Register any candidate paths that exist on disk
+            for cp in candidate_paths:
+                if cp.is_file() and cp.exists():
+                    info = create_file_info(cp)
+                    if not any(df.file_id == info.file_id for df in discovered_files):
+                        self.file_registry[info.file_id] = cp
+                        self.file_registry[cp.name] = cp
+                        discovered_files.append(info)
+
+            # Also scan downloads directory for newly created or modified files
             if downloads_dir.exists():
                 for f in downloads_dir.iterdir():
                     if not f.is_file():
                         continue
                     mtime = f.stat().st_mtime
-                    # File was newly created or modified during this job execution
                     if f.name not in before_files or mtime >= (start_timestamp - 1.0):
                         info = create_file_info(f)
-                        self.file_registry[info.file_id] = f
-                        self.file_registry[f.name] = f
-                        discovered_files.append(info)
+                        if not any(df.file_id == info.file_id for df in discovered_files):
+                            self.file_registry[info.file_id] = f
+                            self.file_registry[f.name] = f
+                            discovered_files.append(info)
 
-            # If specific actual_filepath found, ensure it is in the list
-            if actual_filepath and os.path.exists(actual_filepath):
-                p = Path(actual_filepath)
-                task.filepath = str(p)
-                task.filename = p.name
-                if not any(df.filename == p.name for df in discovered_files):
-                    info = create_file_info(p)
-                    self.file_registry[info.file_id] = p
-                    discovered_files.insert(0, info)
-            elif discovered_files:
+            if discovered_files:
                 task.filepath = str(self.file_registry[discovered_files[0].file_id])
                 task.filename = discovered_files[0].filename
-
-            task.files = discovered_files
-            task.status = "completed"
-            task.progress_percent = 100.0
-            task.completed_at = datetime.datetime.now(datetime.timezone.utc)
-            task.logs.append(f"Task completed. Generated {len(discovered_files)} file(s).")
-            self.total_completed_downloads += 1
-            self.touch_activity()
+                task.files = discovered_files
+                task.status = "completed"
+                task.progress_percent = 100.0
+                task.completed_at = datetime.datetime.now(datetime.timezone.utc)
+                task.logs.append(f"Task completed. Generated {len(discovered_files)} file(s).")
+                self.total_completed_downloads += 1
+                self.touch_activity()
+            else:
+                task.status = "failed"
+                task.error = "Download completed without generating any output files."
+                task.completed_at = datetime.datetime.now(datetime.timezone.utc)
+                task.logs.append("ERROR: No output files were produced by yt-dlp.")
+                self.touch_activity()
 
         except asyncio.CancelledError:
             task.status = "cancelled"

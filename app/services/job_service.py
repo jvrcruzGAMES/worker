@@ -137,7 +137,7 @@ class JobService:
 
             # Poll status until finished
             while True:
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(1.0)
                 runner.touch()
 
                 async with httpx.AsyncClient(timeout=5.0) as client:
@@ -146,6 +146,10 @@ class JobService:
                         continue
 
                     status_data = resp.json()
+                    current_status = status_data.get("status")
+                    if current_status:
+                        job.status = current_status
+
                     job.progress_percent = status_data.get("progress_percent", 0.0)
                     job.downloaded_bytes = status_data.get("downloaded_bytes", 0)
                     job.total_bytes = status_data.get("total_bytes")
@@ -156,9 +160,7 @@ class JobService:
                     if status_data.get("logs"):
                         job.logs = status_data["logs"]
 
-                    current_status = status_data.get("status")
                     if current_status in ["completed", "failed", "cancelled"]:
-                        job.status = current_status
                         job.error = status_data.get("error")
                         job.completed_at = datetime.datetime.now(datetime.timezone.utc)
 

@@ -31,6 +31,10 @@ class RunnerSettings(BaseSettings):
 
     FLARESOLVERR_URL: str = os.getenv("FLARESOLVERR_URL", "http://flaresolverr:8191/v1")
     FLARESOLVERR_PROXY: Optional[str] = os.getenv("FLARESOLVERR_PROXY", None)
+    BGUTIL_POT_PROVIDER_URL: Optional[str] = os.getenv(
+        "BGUTIL_POT_PROVIDER_URL",
+        os.getenv("POT_PROVIDER_URL", None)
+    )
     MITMPROXY_PORT: int = 8192
     USE_FLARESOLVERR_PROXY: bool = True
 

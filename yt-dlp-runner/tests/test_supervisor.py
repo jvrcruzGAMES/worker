@@ -133,3 +133,19 @@ async def test_file_listing_and_hex_streaming():
                 test_video.unlink()
             if test_sub.exists():
                 test_sub.unlink()
+
+
+def test_pot_provider_extractor_args():
+    import yt_dlp
+    pot_url = "http://bgutil-server:4416"
+    ydl_opts = {}
+    extractor_args = ydl_opts.setdefault("extractor_args", {})
+    for ext_name in ["youtubepot-bgutilhttp", "youtubepot-bgutil", "youtubepot"]:
+        ext_dict = extractor_args.setdefault(ext_name, {})
+        ext_dict["base_url"] = [pot_url]
+    yt_dict = extractor_args.setdefault("youtube", {})
+    yt_dict["getpot_bgutil_baseurl"] = [pot_url]
+
+    assert ydl_opts["extractor_args"]["youtubepot-bgutilhttp"]["base_url"] == ["http://bgutil-server:4416"]
+    assert ydl_opts["extractor_args"]["youtube"]["getpot_bgutil_baseurl"] == ["http://bgutil-server:4416"]
+

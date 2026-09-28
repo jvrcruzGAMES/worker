@@ -36,9 +36,26 @@ class JobService:
         return token
 
     def validate_and_consume_single_use_token(self, token: Optional[str]) -> bool:
-        self._cleanup_expired_tokens()
         if not token:
             return False
+
+        from app.services.announcer import announcer
+        from app.services.crypto import worker_crypto
+
+        # 1. Verify orchestrator-issued cryptographic token
+        if worker_crypto.verify_and_consume_token(
+            token=token,
+            expected_worker_id=announcer.worker_id,
+            auth_token=announcer.auth_token,
+        ):
+            return True
+
+        # 2. In dev/test mode without announcer auth_token, also verify token structure
+        if not announcer.auth_token and worker_crypto.verify_and_consume_token(token=token):
+            return True
+
+        # 3. Fallback for locally generated in-memory tokens (dev/test)
+        self._cleanup_expired_tokens()
         expiry = self.single_use_tokens.pop(token, None)
         if expiry is None:
             return False
@@ -73,17 +90,58 @@ class JobService:
         self.job_tracking_tokens[job_id] = tracking_token
         now = datetime.datetime.now(datetime.timezone.utc)
 
+        # Handle envelope-decrypted credentials if present
+        effective_cookie = request.cookie_content
+        effective_custom_args = list(request.custom_args or [])
+        effective_plugins = list(request.plugins or [])
+
+        if request.encrypted_credentials:
+            from app.services.crypto import worker_crypto
+            try:
+                decrypted = worker_crypto.decrypt_envelope(
+                    client_public_key_b64=request.encrypted_credentials.client_public_key,
+                    nonce_b64=request.encrypted_credentials.nonce,
+                    ciphertext_b64=request.encrypted_credentials.ciphertext,
+                )
+                logger.info(f"Successfully decrypted envelope credentials for job {job_id}")
+                if "cookie_content" in decrypted and decrypted["cookie_content"]:
+                    effective_cookie = decrypted["cookie_content"]
+                if "custom_args" in decrypted and decrypted["custom_args"]:
+                    extra_args = decrypted["custom_args"]
+                    if isinstance(extra_args, list):
+                        effective_custom_args.extend(extra_args)
+                if "plugins" in decrypted and decrypted["plugins"]:
+                    extra_plugins = decrypted["plugins"]
+                    if isinstance(extra_plugins, list):
+                        for p in extra_plugins:
+                            if p not in effective_plugins:
+                                effective_plugins.append(p)
+            except Exception as e:
+                logger.error(f"Failed to decrypt envelope credentials for job {job_id}: {e}")
+                job = JobResponse(
+                    job_id=job_id,
+                    tracking_token=tracking_token,
+                    url=request.url,
+                    status="failed",
+                    error=f"Envelope credential decryption failed: {e}",
+                    plugins=request.plugins or [],
+                    created_at=now,
+                    completed_at=now,
+                    logs=[f"Job created at {now.isoformat()}", f"Decryption error: {e}"],
+                )
+                self.jobs[job_id] = job
+                return job
+
         job = JobResponse(
             job_id=job_id,
             tracking_token=tracking_token,
             url=request.url,
             status="starting_container",
-            plugins=request.plugins or [],
+            plugins=effective_plugins,
             created_at=now,
             logs=[f"Job created at {now.isoformat()}"],
         )
         self.jobs[job_id] = job
-
 
         # Provision or retrieve runner container
         try:
@@ -94,9 +152,19 @@ class JobService:
             runner.active_jobs_count += 1
             runner.touch()
 
+            # Create effective request for runner dispatch
+            dispatch_req = JobCreateRequest(
+                url=request.url,
+                cookie_content=effective_cookie,
+                custom_args=effective_custom_args,
+                output_template=request.output_template,
+                format_selection=request.format_selection,
+                plugins=effective_plugins,
+            )
+
             # Forward download request to runner HTTP supervisor
             async_task = asyncio.create_task(
-                self._dispatch_and_monitor(job_id, runner, request)
+                self._dispatch_and_monitor(job_id, runner, dispatch_req)
             )
             self._sync_tasks[job_id] = async_task
 

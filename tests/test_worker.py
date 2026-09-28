@@ -167,3 +167,147 @@ def test_worker_integrity_proof():
     assert len(proof) == 64  # SHA-256 hex digest length
 
 
+def test_hardcoded_runner_image(monkeypatch):
+    from app.config import Settings, OFFICIAL_RUNNER_IMAGE, settings
+
+    assert settings.RUNNER_IMAGE == OFFICIAL_RUNNER_IMAGE
+    assert settings.RUNNER_IMAGE == "ghcr.io/jvrcruzgames/yt-dlp-runner:latest"
+
+    # Verify that attempting to override via env or constructor is ignored/enforced
+    monkeypatch.setenv("RUNNER_IMAGE", "malicious-image:latest")
+    custom_settings = Settings(RUNNER_IMAGE="custom-image:latest")
+    assert custom_settings.RUNNER_IMAGE == OFFICIAL_RUNNER_IMAGE
+
+
+@pytest.mark.asyncio
+async def test_envelope_encryption_flow(monkeypatch):
+    from app.services.crypto import worker_crypto
+    from app.services.announcer import announcer
+    import secrets
+
+    monkeypatch.setattr(announcer, "_worker_id", "worker-crypto-test")
+    monkeypatch.setattr(announcer, "_auth_token", "auth-token-crypto-test")
+
+    # 1. Verify public_key exists on worker
+    pub_key = worker_crypto.public_key_b64
+    assert pub_key is not None
+    assert len(pub_key) > 20
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        info_resp = await client.get("/info")
+        assert info_resp.status_code == 200
+        assert info_resp.json()["public_key"] == pub_key
+
+        health_resp = await client.get("/health")
+        assert health_resp.status_code == 200
+        assert health_resp.json()["public_key"] == pub_key
+
+    # 2. Encrypt credentials with client ephemeral key
+    secret_payload = {
+        "cookie_content": "# Netscape HTTP Cookie File\n.youtube.com TRUE / FALSE 1999999999 SID secret_cookie_123\n",
+        "custom_args": ["--write-thumbnail", "--write-subs"],
+        "plugins": ["yt-dlp-secret-plugin"],
+    }
+    encrypted_dict = worker_crypto.encrypt_envelope(
+        recipient_public_key_b64=pub_key,
+        payload_dict=secret_payload,
+    )
+    assert "client_public_key" in encrypted_dict
+    assert "nonce" in encrypted_dict
+    assert "ciphertext" in encrypted_dict
+
+    # 3. Create single use token issued for this worker
+    import base64, json, hmac, hashlib, time
+    now_ts = int(time.time())
+    payload = {
+        "jti": secrets.token_hex(16),
+        "worker_id": "worker-crypto-test",
+        "iat": now_ts,
+        "exp": now_ts + 300,
+    }
+    payload_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode("utf-8").rstrip("=")
+    sig = hmac.new("auth-token-crypto-test".encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).hexdigest()
+    valid_token = f"{payload_b64}.{sig}"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Create job with encrypted credentials
+        job_req = {
+            "url": "https://youtube.com/watch?v=sample-encrypted",
+            "encrypted_credentials": encrypted_dict,
+        }
+        create_resp = await client.post(
+            "/api/v1/jobs",
+            json=job_req,
+            headers={"Authorization": f"Bearer {valid_token}"}
+        )
+        assert create_resp.status_code == 202
+        created_data = create_resp.json()
+        assert "job_id" in created_data
+        job_id = created_data["job_id"]
+
+        # Check job in service has the decrypted plugins
+        job = job_service.get_job(job_id)
+        assert job is not None
+        assert "yt-dlp-secret-plugin" in job.plugins
+
+        # 4. Attempt to reuse token -> 401
+        reuse_resp = await client.post(
+            "/api/v1/jobs",
+            json=job_req,
+            headers={"Authorization": f"Bearer {valid_token}"}
+        )
+        assert reuse_resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_token_tampering_and_mismatch(monkeypatch):
+    from app.services.announcer import announcer
+    import base64, json, hmac, hashlib, time, secrets
+
+    monkeypatch.setattr(announcer, "_worker_id", "worker-target")
+    monkeypatch.setattr(announcer, "_auth_token", "target-secret-key")
+
+    now_ts = int(time.time())
+
+    # Case 1: Wrong signature
+    payload = {"jti": secrets.token_hex(16), "worker_id": "worker-target", "iat": now_ts, "exp": now_ts + 300}
+    payload_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode("utf-8").rstrip("=")
+    bad_sig_token = f"{payload_b64}.invalid_hmac_signature"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/jobs",
+            json={"url": "https://youtube.com/watch?v=sample"},
+            headers={"Authorization": f"Bearer {bad_sig_token}"}
+        )
+        assert resp.status_code == 401
+
+        # Case 2: Wrong worker_id
+        payload_wrong_worker = {"jti": secrets.token_hex(16), "worker_id": "different-worker", "iat": now_ts, "exp": now_ts + 300}
+        payload_ww_b64 = base64.urlsafe_b64encode(json.dumps(payload_wrong_worker).encode("utf-8")).decode("utf-8").rstrip("=")
+        sig_ww = hmac.new("target-secret-key".encode("utf-8"), payload_ww_b64.encode("utf-8"), hashlib.sha256).hexdigest()
+        wrong_worker_token = f"{payload_ww_b64}.{sig_ww}"
+
+        resp_ww = await client.post(
+            "/api/v1/jobs",
+            json={"url": "https://youtube.com/watch?v=sample"},
+            headers={"Authorization": f"Bearer {wrong_worker_token}"}
+        )
+        assert resp_ww.status_code == 401
+
+        # Case 3: Expired token
+        payload_exp = {"jti": secrets.token_hex(16), "worker_id": "worker-target", "iat": now_ts - 500, "exp": now_ts - 100}
+        payload_exp_b64 = base64.urlsafe_b64encode(json.dumps(payload_exp).encode("utf-8")).decode("utf-8").rstrip("=")
+        sig_exp = hmac.new("target-secret-key".encode("utf-8"), payload_exp_b64.encode("utf-8"), hashlib.sha256).hexdigest()
+        expired_token = f"{payload_exp_b64}.{sig_exp}"
+
+        resp_exp = await client.post(
+            "/api/v1/jobs",
+            json={"url": "https://youtube.com/watch?v=sample"},
+            headers={"Authorization": f"Bearer {expired_token}"}
+        )
+        assert resp_exp.status_code == 401
+
+
+
+

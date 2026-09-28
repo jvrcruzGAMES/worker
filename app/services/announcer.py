@@ -5,6 +5,7 @@ import httpx
 
 from app.config import settings
 
+from app.services.crypto import worker_crypto
 from app.services.integrity import worker_integrity
 
 logger = logging.getLogger("worker.announcer")
@@ -127,6 +128,7 @@ class OrchestratorAnnouncer:
                 "base_url": settings.WORKER_BASE_URL,
                 "health_endpoint": settings.HEALTH_ENDPOINT,
                 "status": "online",
+                "public_key": worker_crypto.public_key_b64,
                 "metadata": settings.metadata_dict,
                 "tags": settings.WORKER_TAGS,
                 "challenge_id": challenge_id,

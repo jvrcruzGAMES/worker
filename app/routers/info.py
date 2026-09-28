@@ -4,6 +4,7 @@ from app.config import settings
 from app.routers.health import START_TIME
 from app.schemas import WorkerInfoResponse
 from app.services.announcer import announcer
+from app.services.crypto import worker_crypto
 
 router = APIRouter(tags=["Discovery & Info"])
 
@@ -21,5 +22,6 @@ async def worker_info():
         tags=settings.WORKER_TAGS,
         metadata=settings.metadata_dict,
         version=settings.WORKER_VERSION,
+        public_key=worker_crypto.public_key_b64,
         uptime_seconds=uptime,
     )

@@ -43,8 +43,7 @@ ADMIN_KEY=your-secure-admin-secret-key
 FLARESOLVERR_URL=http://flaresolverr:8191/v1
 BGUTIL_POT_PROVIDER_URL=http://bgutil-provider:4416
 
-# Docker and Runner Container Configuration (Using official prebuilt GHCR runner image)
-RUNNER_IMAGE=ghcr.io/jvrcruzgames/yt-dlp-runner:latest
+# Docker Configuration (Worker automatically uses the official hardcoded runner image: ghcr.io/jvrcruzgames/yt-dlp-runner:latest)
 DOCKER_NETWORK=mithril-network
 SHARED_DOWNLOADS_VOLUME=mithril-downloads
 SHARED_COOKIES_VOLUME=mithril-cookies
@@ -109,7 +108,6 @@ services:
       - WORKER_BASE_URL=https://worker.yourdomain.com
       - ADMIN_KEY=your-secure-admin-secret-key
       - DOCKER_NETWORK=mithril-network
-      - RUNNER_IMAGE=ghcr.io/jvrcruzgames/yt-dlp-runner:latest
       - FLARESOLVERR_URL=http://flaresolverr:38191/v1
       - BGUTIL_POT_PROVIDER_URL=http://bgutil-provider:34416
       - SHARED_DOWNLOADS_VOLUME=mithril-downloads
@@ -149,21 +147,28 @@ docker compose up -d
 
 ---
 
-## Authentication & Handshake Workflow
+## Authentication & Envelope Encryption Workflow
 
-Mithril uses a secure three-tier handshake:
+Mithril uses an end-to-end secure handshake protecting credentials against reverse proxies and rogue intermediaries:
 
-1. **Discovery**:
+1. **Discovery & Worker Selection (Orchestrator Authority)**:
    - The client queries the Orchestrator (`GET /api/v1/workers/discover`) with Mithril+ authentication.
-2. **Worker Selection & Single-Use Token**:
-   - The client decides which worker to use and sends its choice to the Orchestrator (`POST /api/v1/workers/select`).
-   - The Orchestrator logs worker selection metrics (monthly and all-time counts) and requests a single-use auth token from the chosen worker.
-   - The Orchestrator forwards this single-use token back to the client.
-3. **Job Creation**:
-   - The client submits the download job (`POST /api/v1/jobs`) to the worker, providing the single-use token in the `Authorization: Bearer <single_use_token>` header.
-   - The worker validates and **immediately consumes** the single-use token, generates a unique **Job Tracking Token**, and starts the download.
+   - The client selects a worker (`POST /api/v1/workers/select`).
+   - The **Orchestrator acts as the sole authority**: it validates the client's Mithril+ license, logs metrics, and **issues a signed, single-use authentication token** bound to the chosen worker (`single_use_token`) along with the worker's X25519 `public_key`.
+
+2. **Application-Layer Envelope Encryption (Reverse-Proxy Immunity)**:
+   - To prevent reverse proxies (e.g. Cloudflare, Nginx, or corporate proxies) from snooping on sensitive YouTube cookies or credentials:
+   - The client generates an ephemeral X25519 keypair and performs ECDH with the worker's `public_key`.
+   - The client derives a 32-byte symmetric key via HKDF-SHA256 and encrypts sensitive fields (`cookie_content`, `custom_args`, `plugins`) using `ChaCha20-Poly1305`.
+   - The client submits `encrypted_credentials` inside `POST /api/v1/jobs`. Intermediaries only see encrypted ciphertext.
+
+3. **Job Creation & Token Verification**:
+   - The worker verifies the Orchestrator's cryptographic signature on the single-use token and enforces replay protection (`jti`).
+   - The worker decrypts `encrypted_credentials` in-memory using its private key and forwards the job to the isolated child runner.
+   - The worker issues a **Job Tracking Token** back to the client.
+
 4. **Tracking & Download Stream**:
-   - The client polls job progress (`GET /api/v1/jobs/{job_id}`) or cancels (`POST /api/v1/jobs/{job_id}/cancel`) using the tracking token (`Authorization: Bearer <tracking_token>`).
+   - The client polls job progress (`GET /api/v1/jobs/{job_id}`) using the tracking token (`Authorization: Bearer <tracking_token>`).
    - Once completed, the client streams the file via `GET /api/v1/jobs/{job_id}/download`.
    - **Upon stream completion, the tracking token is automatically invalidated.**
 
@@ -175,18 +180,12 @@ Mithril uses a secure three-tier handshake:
 
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
-| `GET` | `/health` | None | Worker health check and active container counts |
-| `GET` | `/info` | None | Worker metadata, version, and capabilities |
-| `POST` | `/api/v1/jobs` | Single-Use Token | Create a download job (returns tracking token) |
+| `GET` | `/health` | None | Worker health check, active container counts, and X25519 `public_key` |
+| `GET` | `/info` | None | Worker metadata, version, capabilities, and X25519 `public_key` |
+| `POST` | `/api/v1/jobs` | Orchestrator Single-Use Token | Create a download job with plaintext or envelope-encrypted credentials |
 | `GET` | `/api/v1/jobs/{job_id}` | Tracking Token / Admin | Poll download progress, status, and file metadata |
 | `POST` | `/api/v1/jobs/{job_id}/cancel` | Tracking Token / Admin | Cancel an active download |
 | `GET` | `/api/v1/jobs/{job_id}/download` | Tracking Token / Admin | Stream finished download (invalidates tracking token on finish) |
-
-### Orchestrator Endpoints
-
-| Method | Endpoint | Auth | Description |
-|---|---|---|---|
-| `POST` | `/api/v1/tokens/single-use` | Worker Token | Issues a single-use token for a selected client |
 
 ### Admin Endpoints (Requires `ADMIN_KEY`)
 
@@ -197,4 +196,5 @@ Pass `X-Admin-Key: <ADMIN_KEY>` or `Authorization: Bearer <ADMIN_KEY>`.
 | `GET` | `/api/v1/jobs` | `ADMIN_KEY` | List all jobs currently held on this worker |
 | `GET` | `/api/v1/containers` | `ADMIN_KEY` | Inspect active runner containers and inactivity countdowns |
 | `DELETE` | `/api/v1/containers/{container_id}` | `ADMIN_KEY` | Manually terminate and clean up a runner container |
+
 

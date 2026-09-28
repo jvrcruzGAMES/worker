@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.config import settings
 from app.schemas import HealthStatusResponse
 from app.services.announcer import announcer
+from app.services.crypto import worker_crypto
 from app.services.docker_manager import docker_manager
 from app.services.job_service import job_service
 
@@ -22,6 +23,7 @@ async def health_check():
         worker_name=settings.WORKER_NAME,
         uptime_seconds=uptime,
         version=settings.WORKER_VERSION,
+        public_key=worker_crypto.public_key_b64,
         active_runner_containers=len(containers),
         active_jobs=active_jobs,
     )

@@ -25,15 +25,6 @@ services:
     networks:
       - mithril-net
 
-  # Pre-build runner image so worker can spin up child container instances dynamically
-  yt-dlp-runner-base:
-    build:
-      context: ./yt-dlp-runner
-      dockerfile: Dockerfile
-    image: mithril-yt-dlp-runner:latest
-    restart: "no"
-    entrypoint: ["echo", "yt-dlp runner base image built successfully."]
-
   worker:
     build:
       context: .
@@ -51,7 +42,6 @@ services:
       - ORCHESTRATOR_URL=${ORCHESTRATOR_URL:-https://dl.jvrcruz.games}
       - ADMIN_KEY=${ADMIN_KEY:-}
       - DOCKER_NETWORK=mithril-network
-      - RUNNER_IMAGE=mithril-yt-dlp-runner:latest
       - FLARESOLVERR_URL=http://flaresolverr:38191/v1
       - FLARESOLVERR_PROXY=${FLARESOLVERR_PROXY:-}
       - BGUTIL_POT_PROVIDER_URL=http://bgutil-provider:4416
@@ -64,7 +54,6 @@ services:
     depends_on:
       - flaresolverr
       - bgutil-provider
-      - yt-dlp-runner-base
     networks:
       - mithril-net
 

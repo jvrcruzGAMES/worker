@@ -7,6 +7,9 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+OFFICIAL_RUNNER_IMAGE: str = "ghcr.io/jvrcruzgames/yt-dlp-runner:latest"
+
+
 class Settings(BaseSettings):
     WORKER_NAME: str = "Mithril Worker"
     WORKER_VERSION: str = "0.1.0"
@@ -35,8 +38,9 @@ class Settings(BaseSettings):
     HEARTBEAT_INTERVAL_SECONDS: int = 10
     
     # yt-dlp child container & runner configuration
+    # Note: RUNNER_IMAGE is strictly hardcoded to the official GHCR runner image
     DOCKER_HOST: Optional[str] = None
-    RUNNER_IMAGE: str = "ghcr.io/jvrcruzgames/yt-dlp-runner:latest"
+    RUNNER_IMAGE: str = OFFICIAL_RUNNER_IMAGE
     RUNNER_GIT_COMMIT_SHA: Optional[str] = os.getenv("RUNNER_GIT_COMMIT_SHA", None)
     RUNNER_IMAGE_DIGEST: Optional[str] = os.getenv("RUNNER_IMAGE_DIGEST", None)
     DOCKER_NETWORK: str = "mithril-network"
@@ -70,6 +74,11 @@ class Settings(BaseSettings):
         "capabilities": ["yt-dlp", "ffmpeg", "plugins", "dynamic-runner", "cookie-auth"],
         "inactivity_timeout_minutes": 20,
     })
+
+    @field_validator("RUNNER_IMAGE", mode="before")
+    @classmethod
+    def enforce_runner_image(cls, v: Any) -> str:
+        return OFFICIAL_RUNNER_IMAGE
 
     @field_validator("WORKER_BASE_URL", "ORCHESTRATOR_URL")
     @classmethod

@@ -3,12 +3,19 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
+class EncryptedPayload(BaseModel):
+    client_public_key: str = Field(..., description="Base64-encoded client ephemeral X25519 public key")
+    nonce: str = Field(..., description="Base64-encoded 12-byte ChaCha20-Poly1305 nonce")
+    ciphertext: str = Field(..., description="Base64-encoded ciphertext")
+
+
 class HealthStatusResponse(BaseModel):
     status: str
     worker_id: str
     worker_name: str
     uptime_seconds: float
     version: str
+    public_key: Optional[str] = None
     active_runner_containers: int
     active_jobs: int
 
@@ -22,6 +29,7 @@ class WorkerInfoResponse(BaseModel):
     tags: List[str]
     metadata: Dict[str, Any]
     version: str
+    public_key: Optional[str] = None
     uptime_seconds: float
 
 
@@ -30,6 +38,10 @@ class JobCreateRequest(BaseModel):
     cookie_content: Optional[str] = Field(
         default=None,
         description="Raw Netscape cookie file content (stored isolated in runner container)"
+    )
+    encrypted_credentials: Optional[EncryptedPayload] = Field(
+        default=None,
+        description="Optional envelope-encrypted credentials (cookies, proxy, options) protected against reverse proxies"
     )
     custom_args: Optional[List[str]] = Field(
         default_factory=list,

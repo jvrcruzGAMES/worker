@@ -171,9 +171,12 @@ class WorkerIntegrityService:
         Discovers the current git commit SHA for the yt-dlp runner submodule / image.
         """
         if getattr(settings, "RUNNER_GIT_COMMIT_SHA", None):
-            return settings.RUNNER_GIT_COMMIT_SHA.strip()
+            val = settings.RUNNER_GIT_COMMIT_SHA.strip()
+            if val and val != "dev":
+                return val
 
         runner_dir = self._root_dir / "yt-dlp-runner"
+        worker_commit = self.get_commit_sha()
 
         # 1. Check static commit file if baked into container
         for commit_file in [
@@ -185,28 +188,43 @@ class WorkerIntegrityService:
             if commit_file.is_file():
                 try:
                     c = commit_file.read_text().strip()
-                    if len(c) in (40, 64):
+                    if len(c) in (40, 64) and c != worker_commit:
                         return c
                 except Exception:
                     pass
 
-        # 2. Try git CLI from runner_dir or root_dir
-        for cwd, cmd in [
-            (str(runner_dir), ["git", "rev-parse", "HEAD"]),
-            (str(self._root_dir), ["git", "rev-parse", "HEAD:yt-dlp-runner"]),
-        ]:
-            try:
-                res = subprocess.run(
-                    cmd,
-                    cwd=cwd,
-                    capture_output=True,
-                    text=True,
-                    timeout=2.0,
-                )
-                if res.returncode == 0 and res.stdout.strip():
-                    return res.stdout.strip()
-            except Exception:
-                pass
+        # 2. Try git commands from worker root to inspect submodule directly
+        # 'git rev-parse HEAD:yt-dlp-runner' returns the exact submodule commit hash
+        try:
+            res = subprocess.run(
+                ["git", "rev-parse", "HEAD:yt-dlp-runner"],
+                cwd=str(self._root_dir),
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                c = res.stdout.strip()
+                if len(c) in (40, 64) and c != worker_commit:
+                    return c
+        except Exception:
+            pass
+
+        # Try 'git ls-tree HEAD yt-dlp-runner'
+        try:
+            res = subprocess.run(
+                ["git", "ls-tree", "HEAD", "yt-dlp-runner"],
+                cwd=str(self._root_dir),
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                parts = res.stdout.strip().split()
+                if len(parts) >= 3 and len(parts[2]) in (40, 64) and parts[2] != worker_commit:
+                    return parts[2]
+        except Exception:
+            pass
 
         # 3. Try reading submodule .git file or directory directly
         for candidate_path in [
@@ -216,8 +234,25 @@ class WorkerIntegrityService:
             self._root_dir.parent / ".git" / "modules" / "yt-dlp-runner",
         ]:
             resolved = self._read_git_head(candidate_path)
-            if resolved:
+            if resolved and resolved != worker_commit:
                 return resolved
+
+        # 4. If runner_dir has its own dedicated .git directory (not inheriting worker's .git)
+        if (runner_dir / ".git").exists():
+            try:
+                res = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=str(runner_dir),
+                    capture_output=True,
+                    text=True,
+                    timeout=2.0,
+                )
+                if res.returncode == 0 and res.stdout.strip():
+                    c = res.stdout.strip()
+                    if c != worker_commit:
+                        return c
+            except Exception:
+                pass
 
         return "dev"
 

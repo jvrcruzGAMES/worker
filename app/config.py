@@ -3,7 +3,7 @@ import os
 import socket
 import uuid
 from typing import Any, Dict, List, Optional
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -46,9 +46,14 @@ class Settings(BaseSettings):
     DOCKER_NETWORK: str = "mithril-network"
     RUNNER_PORT: int = 8080
     
-    # FlareSolverr configuration (embedded by default inside child runner)
+    # FlareSolverr & HTTP Proxy configuration (embedded by default inside child runner)
+    # Traffic flow: yt-dlp -> FlareSolverr -> User defined proxy (if defined)
+    HTTP_PROXY: Optional[str] = os.getenv(
+        "HTTP_PROXY",
+        os.getenv("http_proxy", os.getenv("FLARESOLVERR_PROXY", None))
+    )
     FLARESOLVERR_URL: str = os.getenv("FLARESOLVERR_URL", "http://127.0.0.1:8191/v1")
-    FLARESOLVERR_PROXY: Optional[str] = os.getenv("FLARESOLVERR_PROXY", None)
+    FLARESOLVERR_PROXY: Optional[str] = os.getenv("FLARESOLVERR_PROXY", os.getenv("HTTP_PROXY", None))
     
     # bgutil YouTube POT token provider configuration (embedded by default inside child runner)
     BGUTIL_POT_PROVIDER_URL: Optional[str] = os.getenv(
@@ -83,6 +88,14 @@ class Settings(BaseSettings):
         if not v.startswith("/"):
             return f"/{v}"
         return v
+
+    @model_validator(mode="after")
+    def sync_proxy_settings(self) -> "Settings":
+        if self.HTTP_PROXY and not self.FLARESOLVERR_PROXY:
+            self.FLARESOLVERR_PROXY = self.HTTP_PROXY
+        elif self.FLARESOLVERR_PROXY and not self.HTTP_PROXY:
+            self.HTTP_PROXY = self.FLARESOLVERR_PROXY
+        return self
 
     @property
     def metadata_dict(self) -> Dict[str, Any]:

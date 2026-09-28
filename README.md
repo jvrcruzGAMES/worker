@@ -58,6 +58,10 @@ DOCKER_NETWORK=mithril-network
 # Inactivity Timeout for child containers (20 minutes default)
 INACTIVITY_TIMEOUT_SECONDS=1200
 
+# Optional Outbound HTTP/HTTPS Proxy (Passed to FlareSolverr & yt-dlp)
+# Traffic Flow: yt-dlp -> FlareSolverr -> User defined proxy (if defined)
+# HTTP_PROXY=http://proxy.yourdomain.com:8080
+
 # Automated Orchestrator Announcement & Heartbeats
 AUTO_ANNOUNCE=true
 HEARTBEAT_INTERVAL_SECONDS=10
@@ -91,6 +95,7 @@ services:
       - DOCKER_NETWORK=mithril-network
       - INACTIVITY_TIMEOUT_SECONDS=1200
       - AUTO_ANNOUNCE=true
+      - HTTP_PROXY=${HTTP_PROXY:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:

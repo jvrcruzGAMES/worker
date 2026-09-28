@@ -171,6 +171,7 @@ class DockerManager:
                 worker_networks = self._get_worker_networks(client)
                 primary_network = worker_networks[0]
 
+                proxy_val = settings.HTTP_PROXY or settings.FLARESOLVERR_PROXY or ""
                 container = client.containers.run(
                     image=runner_image,
                     name=container_name,
@@ -183,8 +184,13 @@ class DockerManager:
                     environment={
                         "DOWNLOADS_DIR": "/app/downloads",
                         "COOKIES_DIR": "/app/cookies",
+                        "HTTP_PROXY": proxy_val,
+                        "http_proxy": proxy_val,
+                        "HTTPS_PROXY": proxy_val,
+                        "https_proxy": proxy_val,
+                        "PROXY_URL": proxy_val,
+                        "FLARESOLVERR_PROXY": proxy_val,
                         "FLARESOLVERR_URL": settings.FLARESOLVERR_URL,
-                        "FLARESOLVERR_PROXY": settings.FLARESOLVERR_PROXY or "",
                         "BGUTIL_POT_PROVIDER_URL": settings.BGUTIL_POT_PROVIDER_URL or "",
                         "POT_PROVIDER_URL": settings.BGUTIL_POT_PROVIDER_URL or "",
                     },

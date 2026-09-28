@@ -426,3 +426,12 @@ async def test_sse_job_events_stream():
         assert "data: {" in text
         assert '"status": "completed"' in text
         assert '"job_id": "sse-test-job-456"' in text
+
+
+def test_worker_http_proxy_setting(monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.test.internal:8080")
+    custom_settings = Settings()
+    assert custom_settings.HTTP_PROXY == "http://proxy.test.internal:8080"
+    assert custom_settings.FLARESOLVERR_PROXY == "http://proxy.test.internal:8080"

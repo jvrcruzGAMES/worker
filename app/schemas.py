@@ -106,6 +106,10 @@ class JobResponse(BaseModel):
         default_factory=list,
         description="Table of all generated files with their hex file IDs and download URLs"
     )
+    receipt_token: Optional[str] = Field(
+        default=None,
+        description="Worker-signed cryptographic download receipt token for reporting successful download to orchestrator"
+    )
     error: Optional[str] = None
     created_at: datetime.datetime
     completed_at: Optional[datetime.datetime] = None

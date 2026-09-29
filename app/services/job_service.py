@@ -356,6 +356,19 @@ class JobService:
                         elif job.filename:
                             job.download_url = f"/api/v1/jobs/{job_id}/download"
 
+                        # Generate cryptographic download receipt for orchestrator payout reporting
+                        from app.services.announcer import announcer
+                        from app.services.crypto import worker_crypto
+                        if announcer.auth_token and announcer.worker_id:
+                            job.receipt_token = worker_crypto.generate_download_receipt(
+                                worker_id=announcer.worker_id,
+                                auth_token=announcer.auth_token,
+                                job_id=job_id,
+                                user_id=job.user_id,
+                                file_id=file_items[0].file_id if file_items else None,
+                                bytes_downloaded=job.downloaded_bytes or None,
+                            )
+
                         break
 
         except Exception as e:

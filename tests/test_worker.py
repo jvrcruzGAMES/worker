@@ -818,3 +818,62 @@ async def test_job_service_and_orchestrator_token_user_isolation(monkeypatch):
         assert c_map.get("runner-iso-1") == "account-user-1"
         assert c_map.get("runner-iso-2") == "account-user-2"
 
+
+@pytest.mark.asyncio
+async def test_job_completion_generates_receipt_token(monkeypatch):
+    import base64, json
+    from app.services.announcer import announcer
+    from app.services.crypto import worker_crypto
+
+    monkeypatch.setattr(announcer, "_auth_token", "test-auth-worker-tok")
+    monkeypatch.setattr(announcer, "_worker_id", "worker-receipt-test")
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    job = JobResponse(
+        job_id="job-receipt-test-1",
+        user_id="user-123",
+        tracking_token="track-123",
+        url="https://youtube.com/watch?v=receipt-test",
+        status="completed",
+        downloaded_bytes=2048,
+        files=[
+            FileItemResponse(
+                file_id="abc123hexfileid",
+                filename="test.mp4",
+                size_bytes=2048,
+                download_url="/api/v1/jobs/job-receipt-test-1/files/abc123hexfileid/download",
+                modified_at=now,
+            )
+        ],
+        created_at=now,
+        completed_at=now,
+    )
+    job_service.jobs["job-receipt-test-1"] = job
+    job_service.job_tracking_tokens["job-receipt-test-1"] = "track-123"
+
+    receipt = worker_crypto.generate_download_receipt(
+        worker_id="worker-receipt-test",
+        auth_token="test-auth-worker-tok",
+        job_id="job-receipt-test-1",
+        user_id="user-123",
+        file_id="abc123hexfileid",
+        bytes_downloaded=2048,
+    )
+    job.receipt_token = receipt
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/v1/jobs/job-receipt-test-1", headers={"X-Tracking-Token": "track-123"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["receipt_token"] is not None
+        assert "." in data["receipt_token"]
+
+        # Verify decoded payload has type download_receipt
+        payload_b64 = data["receipt_token"].split(".")[0]
+        padded = payload_b64 + "=" * ((4 - len(payload_b64) % 4) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8"))
+        assert payload["type"] == "download_receipt"
+        assert payload["worker_id"] == "worker-receipt-test"
+        assert payload["job_id"] == "job-receipt-test-1"
+
+

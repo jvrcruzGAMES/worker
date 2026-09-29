@@ -553,6 +553,16 @@ def _build_streaming_response(
     if filename and "content-disposition" not in [k.lower() for k in headers]:
         headers["content-disposition"] = f'attachment; filename="{filename}"'
 
+    if job_id:
+        job = job_service.get_job(job_id)
+        if job and job.receipt_token:
+            headers["x-download-receipt-token"] = job.receipt_token
+            exposed = [h.strip() for h in headers.get("access-control-expose-headers", "").split(",") if h.strip()]
+            for eh in ["x-download-receipt-token", "content-disposition"]:
+                if eh not in [x.lower() for x in exposed]:
+                    exposed.append(eh)
+            headers["access-control-expose-headers"] = ", ".join(exposed)
+
     async def file_generator():
         try:
             async for chunk in upstream_resp.aiter_raw():

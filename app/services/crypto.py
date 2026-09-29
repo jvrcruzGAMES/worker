@@ -115,8 +115,25 @@ class WorkerCryptoService:
         """
         Verifies an orchestrator-signed single-use token and enforces single-use replay protection.
         """
+        valid, _ = self.verify_and_consume_token_with_payload(
+            token=token,
+            expected_worker_id=expected_worker_id,
+            auth_token=auth_token,
+        )
+        return valid
+
+    def verify_and_consume_token_with_payload(
+        self,
+        token: Optional[str],
+        expected_worker_id: Optional[str] = None,
+        auth_token: Optional[str] = None,
+    ) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        """
+        Verifies an orchestrator-signed single-use token, enforces replay protection,
+        and returns (is_valid, decoded_payload_dict).
+        """
         if not token or "." not in token:
-            return False
+            return False, None
 
         self._cleanup_expired_jtis()
 
@@ -134,7 +151,7 @@ class WorkerCryptoService:
 
                 if not secrets.compare_digest(signature, expected_sig):
                     logger.warning("Single-use token signature mismatch.")
-                    return False
+                    return False, None
 
             # 2. Decode and validate claims
             # Pad base64 if necessary
@@ -147,32 +164,32 @@ class WorkerCryptoService:
             exp = payload.get("exp", 0)
 
             if not jti or not exp:
-                return False
+                return False, None
 
             # Check expiration
             if time.time() > exp:
                 logger.warning(f"Single-use token expired (exp={exp}).")
-                return False
+                return False, None
 
             # Check worker ID binding if provided
             if expected_worker_id and worker_id and worker_id != expected_worker_id:
                 logger.warning(
                     f"Single-use token worker_id mismatch (got {worker_id}, expected {expected_worker_id})."
                 )
-                return False
+                return False, None
 
             # 3. Check replay protection (single-use enforcement)
             if jti in self._consumed_jtis:
                 logger.warning(f"Single-use token jti '{jti}' has already been consumed.")
-                return False
+                return False, None
 
             # Mark as consumed
             self._consumed_jtis[jti] = float(exp)
-            return True
+            return True, payload
 
         except Exception as e:
             logger.error(f"Error parsing single-use token: {e}")
-            return False
+            return False, None
 
     def _cleanup_expired_jtis(self):
         now = time.time()

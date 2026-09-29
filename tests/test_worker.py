@@ -579,12 +579,13 @@ async def test_container_draining_spawns_new_container(monkeypatch):
     assert c1.can_accept_jobs is False
 
     # Mock _spawn_runner_container to return a new runner
-    async def mock_spawn():
+    async def mock_spawn(user_id=None, *args, **kwargs):
         c2 = RunnerContainerRecord(
             container_id="runner-fresh-2",
             name="mithril-yt-dlp-runner-fresh",
             host_or_ip="localhost",
             port=8081,
+            user_id=user_id,
         )
         docker_manager._containers[c2.container_id] = c2
         return c2
@@ -683,3 +684,137 @@ async def test_active_download_prevents_container_deletion():
     res_forced = await docker_manager.stop_and_remove_container("c-active-dl", force=True)
     assert res_forced is True
     assert "c-active-dl" not in docker_manager._containers
+
+
+@pytest.mark.asyncio
+async def test_user_specific_runner_container_isolation(monkeypatch):
+    """
+    Verifies that yt-dlp-runner containers are never shared between different users,
+    and that requests from the same user can reuse an active non-draining container.
+    """
+    spawned_containers = []
+
+    async def mock_spawn(user_id=None, *args, **kwargs):
+        cid = f"runner-user-{len(spawned_containers) + 1}"
+        record = RunnerContainerRecord(
+            container_id=cid,
+            name=f"mithril-yt-dlp-runner-{cid}",
+            host_or_ip="localhost",
+            port=8080 + len(spawned_containers),
+            user_id=user_id,
+        )
+        docker_manager._containers[cid] = record
+        spawned_containers.append(record)
+        return record
+
+    async def mock_healthy(record):
+        return True
+
+    monkeypatch.setattr(docker_manager, "_spawn_runner_container", mock_spawn)
+    monkeypatch.setattr(docker_manager, "_is_container_healthy", mock_healthy)
+
+    # 1. User Alice creates a job -> spawns container for Alice
+    runner_alice = await docker_manager.get_or_create_runner(user_id="user-alice-111")
+    assert runner_alice.user_id == "user-alice-111"
+    assert runner_alice.container_id == "runner-user-1"
+
+    # 2. User Bob creates a job -> MUST NOT get Alice's container, MUST spawn a new container for Bob
+    runner_bob = await docker_manager.get_or_create_runner(user_id="user-bob-222")
+    assert runner_bob.user_id == "user-bob-222"
+    assert runner_bob.container_id == "runner-user-2"
+    assert runner_bob.container_id != runner_alice.container_id
+
+    # 3. User Alice submits a second job while runner_alice can accept jobs -> reuses runner_alice
+    runner_alice_2 = await docker_manager.get_or_create_runner(user_id="user-alice-111")
+    assert runner_alice_2.container_id == runner_alice.container_id
+    assert runner_alice_2.user_id == "user-alice-111"
+
+    # 4. User Alice's container enters draining / post-download file retention period
+    runner_alice.is_draining = True
+    runner_alice.last_job_completed_at = time.time()
+    assert runner_alice.can_accept_jobs is False
+
+    # 5. User Alice submits a third job -> MUST NOT reuse draining container or Bob's container, spawns fresh container for Alice
+    runner_alice_3 = await docker_manager.get_or_create_runner(user_id="user-alice-111")
+    assert runner_alice_3.user_id == "user-alice-111"
+    assert runner_alice_3.container_id == "runner-user-3"
+    assert runner_alice_3.container_id != runner_alice.container_id
+    assert runner_alice_3.container_id != runner_bob.container_id
+
+
+@pytest.mark.asyncio
+async def test_job_service_and_orchestrator_token_user_isolation(monkeypatch):
+    """
+    Tests end-to-end token validation with user_id claim embedding and container assignment.
+    """
+    from app.services.announcer import announcer
+    import base64, json, hmac, hashlib
+
+    monkeypatch.setattr(announcer, "_worker_id", "worker-user-isolation")
+    monkeypatch.setattr(announcer, "_auth_token", "secret-token-isolation")
+
+    spawned = []
+    async def mock_spawn(user_id=None, *args, **kwargs):
+        cid = f"runner-iso-{len(spawned) + 1}"
+        rec = RunnerContainerRecord(
+            container_id=cid,
+            name=f"runner-{cid}",
+            host_or_ip="localhost",
+            port=8090 + len(spawned),
+            user_id=user_id,
+        )
+        docker_manager._containers[cid] = rec
+        spawned.append(rec)
+        return rec
+
+    monkeypatch.setattr(docker_manager, "_spawn_runner_container", mock_spawn)
+    monkeypatch.setattr(docker_manager, "_is_container_healthy", lambda r: True)
+
+    now_ts = int(time.time())
+
+    # User 1 token
+    p1 = {"jti": "jti-1", "worker_id": "worker-user-isolation", "iat": now_ts, "exp": now_ts + 300, "user_id": "account-user-1"}
+    p1_b64 = base64.urlsafe_b64encode(json.dumps(p1).encode("utf-8")).decode("utf-8").rstrip("=")
+    sig1 = hmac.new("secret-token-isolation".encode("utf-8"), p1_b64.encode("utf-8"), hashlib.sha256).hexdigest()
+    token1 = f"{p1_b64}.{sig1}"
+
+    # User 2 token
+    p2 = {"jti": "jti-2", "worker_id": "worker-user-isolation", "iat": now_ts, "exp": now_ts + 300, "user_id": "account-user-2"}
+    p2_b64 = base64.urlsafe_b64encode(json.dumps(p2).encode("utf-8")).decode("utf-8").rstrip("=")
+    sig2 = hmac.new("secret-token-isolation".encode("utf-8"), p2_b64.encode("utf-8"), hashlib.sha256).hexdigest()
+    token2 = f"{p2_b64}.{sig2}"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # User 1 creates job
+        resp1 = await client.post(
+            "/api/v1/jobs",
+            json={"url": "https://youtube.com/watch?v=sample1"},
+            headers={"Authorization": f"Bearer {token1}"}
+        )
+        assert resp1.status_code == 202
+        jdata1 = resp1.json()
+        assert jdata1["user_id"] == "account-user-1"
+        assert jdata1["container_id"] == "runner-iso-1"
+
+        # User 2 creates job -> gets separate container
+        resp2 = await client.post(
+            "/api/v1/jobs",
+            json={"url": "https://youtube.com/watch?v=sample2"},
+            headers={"Authorization": f"Bearer {token2}"}
+        )
+        assert resp2.status_code == 202
+        jdata2 = resp2.json()
+        assert jdata2["user_id"] == "account-user-2"
+        assert jdata2["container_id"] == "runner-iso-2"
+        assert jdata2["container_id"] != jdata1["container_id"]
+
+        # Admin container inspection shows user_ids
+        admin_headers = {"X-Admin-Key": "secret-admin-pass-123"}
+        monkeypatch.setattr(settings, "ADMIN_KEY", "secret-admin-pass-123")
+        c_resp = await client.get("/api/v1/containers", headers=admin_headers)
+        assert c_resp.status_code == 200
+        containers = c_resp.json()
+        c_map = {c["container_id"]: c["user_id"] for c in containers}
+        assert c_map.get("runner-iso-1") == "account-user-1"
+        assert c_map.get("runner-iso-2") == "account-user-2"
+

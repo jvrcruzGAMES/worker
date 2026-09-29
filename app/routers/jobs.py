@@ -131,9 +131,10 @@ def require_orchestrator_or_admin(
     description="Called by the orchestrator after a client chooses this worker. Requires orchestrator worker auth token."
 )
 async def create_single_use_token(
+    user_id: Optional[str] = Query(None, description="Optional user ID to associate with the single-use token"),
     _: bool = Depends(require_orchestrator_or_admin),
 ):
-    token = job_service.generate_single_use_token(expires_in=300)
+    token = job_service.generate_single_use_token(expires_in=300, user_id=user_id)
     return SingleUseTokenResponse(token=token, expires_in=300)
 
 
@@ -155,12 +156,13 @@ async def create_job(
     token: Optional[str] = Query(None, description="Single-use token"),
 ):
     single_use_token = extract_token_from_request(authorization, x_single_use_token, token)
-    if not job_service.validate_and_consume_single_use_token(single_use_token):
+    valid, token_user_id = job_service.validate_and_consume_single_use_token(single_use_token)
+    if not valid:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid, expired, or already-used single-use authorization token.",
         )
-    return await job_service.create_job(request)
+    return await job_service.create_job(request, token_user_id=token_user_id)
 
 
 @router.get(
@@ -495,6 +497,7 @@ async def list_containers():
             ContainerInfoResponse(
                 container_id=c.container_id,
                 name=c.name,
+                user_id=c.user_id,
                 status="draining" if c.is_draining else "running",
                 ip_address=c.host_or_ip,
                 endpoint_url=c.base_url,

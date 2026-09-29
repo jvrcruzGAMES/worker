@@ -35,6 +35,10 @@ class WorkerInfoResponse(BaseModel):
 
 class JobCreateRequest(BaseModel):
     url: str = Field(..., description="Media URL to download via yt-dlp")
+    user_id: Optional[str] = Field(
+        default=None,
+        description="Optional user identifier associated with this job"
+    )
     cookie_content: Optional[str] = Field(
         default=None,
         description="Raw Netscape cookie file content (stored isolated in runner container)"
@@ -77,6 +81,10 @@ class FileItemResponse(BaseModel):
 
 class JobResponse(BaseModel):
     job_id: str
+    user_id: Optional[str] = Field(
+        default=None,
+        description="User identifier associated with this job"
+    )
     tracking_token: Optional[str] = Field(
         default=None,
         description="Auth token used to track download progress and stream the finished file"
@@ -107,6 +115,7 @@ class JobResponse(BaseModel):
 class ContainerInfoResponse(BaseModel):
     container_id: str
     name: str
+    user_id: Optional[str] = None
     status: str
     ip_address: Optional[str] = None
     endpoint_url: str

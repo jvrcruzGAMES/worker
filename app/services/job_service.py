@@ -24,48 +24,58 @@ class JobService:
         self._sync_tasks: Dict[str, asyncio.Task] = {}
         # Maps file_id (hex) or filename -> (filename, container_id)
         self.file_map: Dict[str, Tuple[str, Optional[str]]] = {}
-        # Single-use tokens for job creation: token -> expiry timestamp
-        self.single_use_tokens: Dict[str, float] = {}
+        # Single-use tokens for job creation: token -> (expiry timestamp, Optional[user_id])
+        self.single_use_tokens: Dict[str, Tuple[float, Optional[str]]] = {}
         # Job tracking tokens: job_id -> tracking_token
         self.job_tracking_tokens: Dict[str, str] = {}
         # Downloaded files tracking: job_id -> set of downloaded file_ids/filenames
         self.downloaded_files: Dict[str, set] = {}
 
-    def generate_single_use_token(self, expires_in: int = 300) -> str:
+    def generate_single_use_token(self, expires_in: int = 300, user_id: Optional[str] = None) -> str:
         self._cleanup_expired_tokens()
         token = secrets.token_urlsafe(32)
-        self.single_use_tokens[token] = time.time() + expires_in
+        self.single_use_tokens[token] = (time.time() + expires_in, user_id)
         return token
 
-    def validate_and_consume_single_use_token(self, token: Optional[str]) -> bool:
+    def validate_and_consume_single_use_token(self, token: Optional[str]) -> Tuple[bool, Optional[str]]:
         if not token:
-            return False
+            return False, None
 
         from app.services.announcer import announcer
         from app.services.crypto import worker_crypto
 
         # 1. Verify orchestrator-issued cryptographic token
-        if worker_crypto.verify_and_consume_token(
+        valid, payload = worker_crypto.verify_and_consume_token_with_payload(
             token=token,
             expected_worker_id=announcer.worker_id,
             auth_token=announcer.auth_token,
-        ):
-            return True
+        )
+        if valid and payload:
+            return True, payload.get("user_id")
+        elif valid:
+            return True, None
 
         # 2. In dev/test mode without announcer auth_token, also verify token structure
-        if not announcer.auth_token and worker_crypto.verify_and_consume_token(token=token):
-            return True
+        if not announcer.auth_token:
+            valid, payload = worker_crypto.verify_and_consume_token_with_payload(token=token)
+            if valid and payload:
+                return True, payload.get("user_id")
+            elif valid:
+                return True, None
 
         # 3. Fallback for locally generated in-memory tokens (dev/test)
         self._cleanup_expired_tokens()
-        expiry = self.single_use_tokens.pop(token, None)
-        if expiry is None:
-            return False
-        return time.time() <= expiry
+        entry = self.single_use_tokens.pop(token, None)
+        if entry is None:
+            return False, None
+        expiry, user_id = entry
+        if time.time() <= expiry:
+            return True, user_id
+        return False, None
 
     def _cleanup_expired_tokens(self):
         now = time.time()
-        expired = [t for t, exp in self.single_use_tokens.items() if exp < now]
+        expired = [t for t, (exp, _) in self.single_use_tokens.items() if exp < now]
         for t in expired:
             self.single_use_tokens.pop(t, None)
 
@@ -148,7 +158,9 @@ class JobService:
             if j.status in ["pending", "starting_container", "installing_plugins", "downloading"]
         )
 
-    async def create_job(self, request: JobCreateRequest) -> JobResponse:
+    async def create_job(
+        self, request: JobCreateRequest, token_user_id: Optional[str] = None
+    ) -> JobResponse:
         job_id = str(uuid.uuid4())
         tracking_token = secrets.token_urlsafe(32)
         self.job_tracking_tokens[job_id] = tracking_token
@@ -158,6 +170,7 @@ class JobService:
         effective_cookie = request.cookie_content
         effective_custom_args = list(request.custom_args or [])
         effective_plugins = list(request.plugins or [])
+        decrypted_user_id = None
 
         if request.encrypted_credentials:
             from app.services.crypto import worker_crypto
@@ -168,6 +181,8 @@ class JobService:
                     ciphertext_b64=request.encrypted_credentials.ciphertext,
                 )
                 logger.info(f"Successfully decrypted envelope credentials for job {job_id}")
+                if "user_id" in decrypted and decrypted["user_id"]:
+                    decrypted_user_id = decrypted["user_id"]
                 if "cookie_content" in decrypted and decrypted["cookie_content"]:
                     effective_cookie = decrypted["cookie_content"]
                 if "custom_args" in decrypted and decrypted["custom_args"]:
@@ -184,6 +199,7 @@ class JobService:
                 logger.error(f"Failed to decrypt envelope credentials for job {job_id}: {e}")
                 job = JobResponse(
                     job_id=job_id,
+                    user_id=token_user_id or request.user_id,
                     tracking_token=tracking_token,
                     url=request.url,
                     status="failed",
@@ -196,8 +212,21 @@ class JobService:
                 self.jobs[job_id] = job
                 return job
 
+        # Determine effective user_id:
+        # 1. Authoritative signed single-use token claim (token_user_id)
+        # 2. Decrypted payload user_id
+        # 3. Request user_id
+        # 4. Fallback to a unique anonymous user ID (ensuring unauthenticated jobs never share containers)
+        effective_user_id = (
+            token_user_id
+            or decrypted_user_id
+            or request.user_id
+            or f"anon-{uuid.uuid4().hex[:12]}"
+        )
+
         job = JobResponse(
             job_id=job_id,
+            user_id=effective_user_id,
             tracking_token=tracking_token,
             url=request.url,
             status="starting_container",
@@ -207,18 +236,19 @@ class JobService:
         )
         self.jobs[job_id] = job
 
-        # Provision or retrieve runner container
+        # Provision or retrieve runner container for this specific user
         try:
-            runner = await docker_manager.get_or_create_runner()
+            runner = await docker_manager.get_or_create_runner(user_id=effective_user_id)
             job.container_id = runner.container_id
             job.container_name = runner.name
-            job.logs.append(f"Assigned to runner container: {runner.name}")
+            job.logs.append(f"Assigned to user-specific runner container: {runner.name}")
             runner.active_jobs_count += 1
             runner.touch()
 
             # Create effective request for runner dispatch
             dispatch_req = JobCreateRequest(
                 url=request.url,
+                user_id=effective_user_id,
                 cookie_content=effective_cookie,
                 custom_args=effective_custom_args,
                 output_template=request.output_template,

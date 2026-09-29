@@ -23,11 +23,19 @@ except ImportError:
 
 
 class RunnerContainerRecord:
-    def __init__(self, container_id: str, name: str, host_or_ip: str, port: int):
+    def __init__(
+        self,
+        container_id: str,
+        name: str,
+        host_or_ip: str,
+        port: int,
+        user_id: Optional[str] = None,
+    ):
         self.container_id = container_id
         self.name = name
         self.host_or_ip = host_or_ip
         self.port = port
+        self.user_id = user_id
         self.base_url = f"http://{host_or_ip}:{port}"
         self.last_activity: float = time.time()
         self.active_jobs_count: int = 0
@@ -102,19 +110,24 @@ class DockerManager:
             return self._client
         return self._client
 
-    async def get_or_create_runner(self) -> RunnerContainerRecord:
+    async def get_or_create_runner(self, user_id: Optional[str] = None) -> RunnerContainerRecord:
         async with self._lock:
-            # 1. Check if we already have an active healthy runner that can accept jobs
-            for record in list(self._containers.values()):
-                if record.can_accept_jobs and await self._is_container_healthy(record):
-                    record.touch()
-                    return record
-                elif not await self._is_container_healthy(record):
-                    # Clean up unresponsive runner from internal tracking
-                    self._containers.pop(record.container_id, None)
+            # 1. Check if we already have an active healthy runner for this specific user that can accept jobs
+            if user_id:
+                for record in list(self._containers.values()):
+                    if (
+                        record.user_id == user_id
+                        and record.can_accept_jobs
+                        and await self._is_container_healthy(record)
+                    ):
+                        record.touch()
+                        return record
+                    elif record.user_id == user_id and not await self._is_container_healthy(record):
+                        # Clean up unresponsive runner from internal tracking
+                        self._containers.pop(record.container_id, None)
 
-            # 2. Spin up a new child container
-            return await self._spawn_runner_container()
+            # 2. Spin up a new child container dedicated to this user
+            return await self._spawn_runner_container(user_id=user_id)
 
     async def _is_container_healthy(self, record: RunnerContainerRecord) -> bool:
         try:
@@ -192,7 +205,7 @@ class DockerManager:
 
         return target
 
-    async def _spawn_runner_container(self) -> RunnerContainerRecord:
+    async def _spawn_runner_container(self, user_id: Optional[str] = None) -> RunnerContainerRecord:
         short_id = uuid.uuid4().hex[:8]
         container_name = f"mithril-yt-dlp-runner-{short_id}"
         client = self._get_docker_client()
@@ -200,34 +213,44 @@ class DockerManager:
         if client:
             try:
                 runner_image = self._resolve_runner_image(client)
-                logger.info(f"Spawning child yt-dlp container '{container_name}' from image '{runner_image}'...")
+                logger.info(
+                    f"Spawning child yt-dlp container '{container_name}' (user_id={user_id}) from image '{runner_image}'..."
+                )
 
                 worker_networks = self._get_worker_networks(client)
                 primary_network = worker_networks[0]
 
                 proxy_val = settings.HTTP_PROXY or settings.FLARESOLVERR_PROXY or ""
+                labels = {
+                    "app": "mithril-yt-dlp-runner",
+                    "managed_by": "mithril-worker",
+                }
+                if user_id:
+                    labels["user_id"] = str(user_id)
+
+                env = {
+                    "DOWNLOADS_DIR": "/app/downloads",
+                    "COOKIES_DIR": "/app/cookies",
+                    "HTTP_PROXY": proxy_val,
+                    "http_proxy": proxy_val,
+                    "HTTPS_PROXY": proxy_val,
+                    "https_proxy": proxy_val,
+                    "PROXY_URL": proxy_val,
+                    "FLARESOLVERR_PROXY": proxy_val,
+                    "FLARESOLVERR_URL": settings.FLARESOLVERR_URL,
+                    "BGUTIL_POT_PROVIDER_URL": settings.BGUTIL_POT_PROVIDER_URL or "",
+                    "POT_PROVIDER_URL": settings.BGUTIL_POT_PROVIDER_URL or "",
+                }
+                if user_id:
+                    env["USER_ID"] = str(user_id)
+
                 container = client.containers.run(
                     image=runner_image,
                     name=container_name,
                     detach=True,
                     network=primary_network,
-                    labels={
-                        "app": "mithril-yt-dlp-runner",
-                        "managed_by": "mithril-worker",
-                    },
-                    environment={
-                        "DOWNLOADS_DIR": "/app/downloads",
-                        "COOKIES_DIR": "/app/cookies",
-                        "HTTP_PROXY": proxy_val,
-                        "http_proxy": proxy_val,
-                        "HTTPS_PROXY": proxy_val,
-                        "https_proxy": proxy_val,
-                        "PROXY_URL": proxy_val,
-                        "FLARESOLVERR_PROXY": proxy_val,
-                        "FLARESOLVERR_URL": settings.FLARESOLVERR_URL,
-                        "BGUTIL_POT_PROVIDER_URL": settings.BGUTIL_POT_PROVIDER_URL or "",
-                        "POT_PROVIDER_URL": settings.BGUTIL_POT_PROVIDER_URL or "",
-                    },
+                    labels=labels,
+                    environment=env,
                     restart_policy={"Name": "no"},
                 )
 
@@ -245,6 +268,7 @@ class DockerManager:
                     name=container_name,
                     host_or_ip=container_name,
                     port=port,
+                    user_id=user_id,
                 )
                 self._containers[container.id] = record
 
@@ -315,17 +339,18 @@ class DockerManager:
                 logger.error(f"Error spinning up docker container: {e}", exc_info=True)
                 if client:
                     raise
-                return self._create_simulated_record(container_name)
+                return self._create_simulated_record(container_name, user_id=user_id)
         else:
-            return self._create_simulated_record(container_name)
+            return self._create_simulated_record(container_name, user_id=user_id)
 
-    def _create_simulated_record(self, name: str) -> RunnerContainerRecord:
+    def _create_simulated_record(self, name: str, user_id: Optional[str] = None) -> RunnerContainerRecord:
         sim_id = f"sim-{uuid.uuid4().hex[:8]}"
         record = RunnerContainerRecord(
             container_id=sim_id,
             name=name,
             host_or_ip="localhost",
             port=settings.RUNNER_PORT,
+            user_id=user_id,
         )
         self._containers[sim_id] = record
         return record

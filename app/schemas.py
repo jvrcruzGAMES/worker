@@ -92,7 +92,10 @@ class JobResponse(BaseModel):
     url: str
     status: str  # pending, starting_container, installing_plugins, downloading, completed, failed, cancelled
     plugins: List[str] = Field(default_factory=list)
-    progress_percent: float = 0.0
+    progress_percent: Optional[float] = Field(
+        default=None,
+        description="Current download progress percentage (0.0 - 100.0) if reported by yt-dlp, otherwise None"
+    )
     downloaded_bytes: int = 0
     total_bytes: Optional[int] = None
     speed_bytes_per_sec: Optional[float] = None

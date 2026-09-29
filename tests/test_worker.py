@@ -877,3 +877,70 @@ async def test_job_completion_generates_receipt_token(monkeypatch):
         assert payload["job_id"] == "job-receipt-test-1"
 
 
+@pytest.mark.asyncio
+async def test_progress_percent_tracker_extracts_latest():
+    from app.services.job_service import extract_latest_progress_percent
+
+    # 1. No logs or non-progress logs -> None
+    assert extract_latest_progress_percent([]) is None
+    assert extract_latest_progress_percent(["[youtube] Extracting URL...", "[info] Downloading webpage"]) is None
+
+    # 2. Single progress line
+    logs_1 = [
+        "[youtube] Extracting URL...",
+        "[download] Destination: video.mp4",
+        "[download]   0.0% of   10.00MiB at 1.00MiB/s ETA 00:10",
+        "[download]  25.4% of   10.00MiB at 2.00MiB/s ETA 00:07",
+    ]
+    assert extract_latest_progress_percent(logs_1) == 25.4
+
+    # 3. Multiple progress lines and streams: must always return latest percentage
+    logs_multiple = [
+        "[download] Destination: video.f137.mp4",
+        "[download]   0.0% of 50.00MiB at 5.00MiB/s ETA 00:10",
+        "[download]  50.0% of 50.00MiB at 5.00MiB/s ETA 00:05",
+        "[download] 100% of 50.00MiB in 00:09 at 5.40MiB/s",
+        "[download] Destination: video.f140.m4a",
+        "[download]   0.0% of  5.00MiB at 1.00MiB/s ETA 00:05",
+        "[download]  68.2% of  5.00MiB at 1.00MiB/s ETA 00:01",
+    ]
+    # Latest percentage is 68.2 (from the second stream)
+    assert extract_latest_progress_percent(logs_multiple) == 68.2
+
+    # 4. Various formatting variants
+    assert extract_latest_progress_percent(["[download] 100.0% of 10.00MiB in 00:05"]) == 100.0
+    assert extract_latest_progress_percent(["[download]  50.5% of ~100.00MiB at 10.00MiB/s ETA 00:05"]) == 50.5
+    assert extract_latest_progress_percent(["[download]  12.3% of ~50.00MiB at 500.00KiB/s ETA 01:23 (frag 1/10)"]) == 12.3
+    assert extract_latest_progress_percent(["[download]   7.2%"]) == 7.2
+
+
+@pytest.mark.asyncio
+async def test_job_response_progress_percent_lifecycle():
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    # 1. New job without progress has progress_percent = None
+    job = JobResponse(
+        job_id="job-pct-test",
+        url="https://youtube.com/watch?v=pct-test",
+        status="starting_container",
+        created_at=now,
+    )
+    job_service.jobs["job-pct-test"] = job
+    job_service.job_tracking_tokens["job-pct-test"] = "track-pct"
+
+    assert job.progress_percent is None
+    job_dict = job.model_dump(mode="json")
+    assert job_dict["progress_percent"] is None
+
+    # 2. Updating with yt-dlp percentage sets proper float number
+    job.status = "downloading"
+    job.progress_percent = 42.5
+    assert job.progress_percent == 42.5
+
+    # 3. Completion sets 100.0
+    job.status = "completed"
+    job.progress_percent = 100.0
+    assert job.progress_percent == 100.0
+
+
+

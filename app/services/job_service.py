@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import logging
+import re
 import secrets
 import time
 import uuid
@@ -16,6 +17,28 @@ from app.schemas import (
 from app.services.docker_manager import RunnerContainerRecord, docker_manager
 
 logger = logging.getLogger("worker.job_service")
+
+PROGRESS_PERCENT_REGEX = re.compile(r"\[download\]\s+([0-9]+(?:\.[0-9]+)?)%")
+
+
+def extract_latest_progress_percent(logs: Optional[List[str]]) -> Optional[float]:
+    """
+    Scans logs in reverse order to find the latest percentage emitted by yt-dlp.
+    Returns properly formatted float (0.0 - 100.0) if found, otherwise None.
+    """
+    if not logs:
+        return None
+    for line in reversed(logs):
+        if not line:
+            continue
+        m = PROGRESS_PERCENT_REGEX.search(line)
+        if m:
+            try:
+                raw_pct = float(m.group(1))
+                return max(0.0, min(100.0, round(raw_pct, 2)))
+            except (ValueError, TypeError):
+                continue
+    return None
 
 
 class JobService:
@@ -312,17 +335,31 @@ class JobService:
                     if current_status:
                         job.status = current_status
 
-                    job.progress_percent = status_data.get("progress_percent", 0.0)
-                    job.downloaded_bytes = status_data.get("downloaded_bytes", 0)
-                    job.total_bytes = status_data.get("total_bytes")
-                    job.speed_bytes_per_sec = status_data.get("speed_bytes_per_sec")
-                    job.eta_seconds = status_data.get("eta_seconds")
-                    job.filename = status_data.get("filename")
+                    raw_pct = status_data.get("progress_percent")
+                    if raw_pct is not None:
+                        job.progress_percent = round(float(raw_pct), 2)
+                    elif status_data.get("logs"):
+                        parsed_pct = extract_latest_progress_percent(status_data["logs"])
+                        if parsed_pct is not None:
+                            job.progress_percent = parsed_pct
+
+                    if status_data.get("downloaded_bytes") is not None:
+                        job.downloaded_bytes = status_data["downloaded_bytes"]
+                    if status_data.get("total_bytes") is not None:
+                        job.total_bytes = status_data["total_bytes"]
+                    if status_data.get("speed_bytes_per_sec") is not None:
+                        job.speed_bytes_per_sec = status_data["speed_bytes_per_sec"]
+                    if status_data.get("eta_seconds") is not None:
+                        job.eta_seconds = status_data["eta_seconds"]
+                    if status_data.get("filename"):
+                        job.filename = status_data["filename"]
                     
                     if status_data.get("logs"):
                         job.logs = status_data["logs"]
 
                     if current_status in ["completed", "failed", "cancelled"]:
+                        if current_status == "completed":
+                            job.progress_percent = 100.0
                         job.error = status_data.get("error")
                         job.completed_at = datetime.datetime.now(datetime.timezone.utc)
 

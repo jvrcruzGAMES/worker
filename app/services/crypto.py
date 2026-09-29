@@ -197,5 +197,38 @@ class WorkerCryptoService:
         for jti in expired:
             self._consumed_jtis.pop(jti, None)
 
+    def generate_download_receipt(
+        self,
+        worker_id: str,
+        auth_token: str,
+        job_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        file_id: Optional[str] = None,
+        bytes_downloaded: Optional[int] = None,
+        expires_in: int = 86400,
+    ) -> str:
+        """Generates a cryptographically signed download receipt token verifying a completed download."""
+        now_ts = int(time.time())
+        import uuid
+        payload = {
+            "jti": f"rcpt-{uuid.uuid4().hex}",
+            "type": "download_receipt",
+            "worker_id": worker_id,
+            "job_id": job_id,
+            "user_id": user_id,
+            "file_id": file_id,
+            "bytes_downloaded": bytes_downloaded,
+            "iat": now_ts,
+            "exp": now_ts + expires_in,
+        }
+        payload_json = json.dumps(payload, separators=(',', ':'))
+        payload_b64 = base64.urlsafe_b64encode(payload_json.encode('utf-8')).decode('utf-8').rstrip('=')
+        sig = hmac.new(
+            auth_token.encode('utf-8'),
+            payload_b64.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+        return f"{payload_b64}.{sig}"
+
 
 worker_crypto = WorkerCryptoService()

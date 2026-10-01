@@ -66,6 +66,9 @@ INACTIVITY_TIMEOUT_SECONDS=1200
 AUTO_ANNOUNCE=true
 HEARTBEAT_INTERVAL_SECONDS=10
 INTEGRITY_CHECK_ENABLED=true
+
+# Mithril Partner Program Payout Key / Wallet Address
+# PAYOUT_KEY=your-partner-wallet-or-key
 ```
 
 > [!IMPORTANT]

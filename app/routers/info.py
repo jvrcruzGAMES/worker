@@ -23,5 +23,6 @@ async def worker_info():
         metadata=settings.metadata_dict,
         version=settings.WORKER_VERSION,
         public_key=worker_crypto.public_key_b64,
+        payout_key=settings.PAYOUT_KEY,
         uptime_seconds=uptime,
     )

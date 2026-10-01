@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     # Admin key for restricted worker routes (listing jobs, container management)
     ADMIN_KEY: Optional[str] = os.getenv("ADMIN_KEY", None)
 
+    # Optional Partner Program Payout Key / Address
+    PAYOUT_KEY: Optional[str] = os.getenv("PAYOUT_KEY", os.getenv("WORKER_PAYOUT_KEY", None))
+
     # URL that clients or orchestrator should use to reach this worker
     WORKER_BASE_URL: str = "http://localhost:8001"
     HEALTH_ENDPOINT: str = "/health"

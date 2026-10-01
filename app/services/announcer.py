@@ -129,6 +129,7 @@ class OrchestratorAnnouncer:
                 "health_endpoint": settings.HEALTH_ENDPOINT,
                 "status": "online",
                 "public_key": worker_crypto.public_key_b64,
+                "payout_key": settings.PAYOUT_KEY,
                 "metadata": settings.metadata_dict,
                 "tags": settings.WORKER_TAGS,
                 "challenge_id": challenge_id,

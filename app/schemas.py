@@ -30,6 +30,7 @@ class WorkerInfoResponse(BaseModel):
     metadata: Dict[str, Any]
     version: str
     public_key: Optional[str] = None
+    payout_key: Optional[str] = None
     uptime_seconds: float
 
 

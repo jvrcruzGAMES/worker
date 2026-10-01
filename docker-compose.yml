@@ -28,6 +28,7 @@ services:
       - INACTIVITY_TIMEOUT_SECONDS=1200
       - AUTO_ANNOUNCE=true
       - HTTP_PROXY=${HTTP_PROXY:-}
+      - PAYOUT_KEY=${PAYOUT_KEY:-}
       - GIT_COMMIT_SHA=${GIT_COMMIT_SHA:-}
       - RUNNER_GIT_COMMIT_SHA=${RUNNER_GIT_COMMIT_SHA:-}
     volumes:

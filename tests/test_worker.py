@@ -943,4 +943,34 @@ async def test_job_response_progress_percent_lifecycle():
     assert job.progress_percent == 100.0
 
 
+@pytest.mark.asyncio
+async def test_worker_payout_key_configuration_and_announcement(monkeypatch):
+    from app.services.announcer import announcer
+
+    # Test setting PAYOUT_KEY
+    test_key = "wallet-test-xyz-987"
+    monkeypatch.setattr(settings, "PAYOUT_KEY", test_key)
+    monkeypatch.setattr(settings, "INTEGRITY_CHECK_ENABLED", False)
+
+    # 1. Test /info returns payout_key
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/info")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["payout_key"] == test_key
+
+    # 2. Test _announce payload includes payout_key
+    recorded_payload = {}
+    async def mock_post(url, *args, **kwargs):
+        nonlocal recorded_payload
+        recorded_payload = kwargs.get("json", {})
+        return httpx.Response(200, json={"worker_id": "w-test", "token": "tok-123"}, request=httpx.Request("POST", str(url)))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
+
+    success = await announcer._announce()
+    assert success is True
+    assert recorded_payload.get("payout_key") == test_key
+
+
 
